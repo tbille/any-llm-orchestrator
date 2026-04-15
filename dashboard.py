@@ -124,9 +124,14 @@ DASHBOARD_HTML = """\
               font-family: 'SF Mono', Menlo, Monaco, 'Courier New', monospace; font-size: 11px;
               color: var(--muted); line-height: 1.5; white-space: pre-wrap; word-break: break-all;
               max-height: 80px; overflow: hidden; }
+  .logs-hidden .log-tail { display: none; }
   .log-size { font-size: 11px; color: var(--muted); font-family: monospace; }
   .log-phase { font-size: 10px; padding: 1px 5px; border-radius: 3px;
                background: rgba(139,148,158,0.12); color: var(--muted); margin-left: 6px; }
+  .log-toggle { font-size: 12px; padding: 3px 10px; border-radius: 4px; cursor: pointer;
+                background: rgba(139,148,158,0.1); color: var(--muted); border: 1px solid var(--border);
+                margin-left: 8px; }
+  .log-toggle:hover { background: rgba(139,148,158,0.2); color: var(--text); }
 
   .notif-banner { font-size: 12px; padding: 6px 12px; border-radius: 6px; cursor: pointer;
                   background: rgba(210,153,34,0.15); color: var(--yellow); border: 1px solid rgba(210,153,34,0.3); }
@@ -146,6 +151,7 @@ DASHBOARD_HTML = """\
   <h1>any-llm-world</h1>
   <div class="meta">
     <span id="notif-status"></span>
+    <button class="log-toggle" id="log-toggle-btn" onclick="toggleLogs()">Hide logs</button>
     Auto-refresh: 5s &middot; <span id="updated"></span>
   </div>
 </div>
@@ -206,6 +212,21 @@ function updateNotifStatus() {
   }
 }
 updateNotifStatus();
+
+// ── Log toggle ───────────────────────────────────────
+let logsVisible = localStorage.getItem("logsVisible") !== "false";
+
+function toggleLogs() {
+  logsVisible = !logsVisible;
+  localStorage.setItem("logsVisible", logsVisible);
+  document.getElementById("app").classList.toggle("logs-hidden", !logsVisible);
+  updateLogToggle();
+}
+
+function updateLogToggle() {
+  const btn = document.getElementById("log-toggle-btn");
+  if (btn) btn.textContent = logsVisible ? "Hide logs" : "Show logs";
+}
 
 function render(data) {
   const { features, phase_labels, phases_by_type, all_phases } = data;
@@ -289,6 +310,9 @@ async function refresh() {
     const res = await fetch("/api/status");
     const data = await res.json();
     render(data);
+    // Apply log visibility state after render replaces the DOM.
+    document.getElementById("app").classList.toggle("logs-hidden", !logsVisible);
+    updateLogToggle();
     checkNotifications(data.features || []);
     document.getElementById("updated").textContent = new Date().toLocaleTimeString();
   } catch (e) {
