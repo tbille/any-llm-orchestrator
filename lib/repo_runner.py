@@ -641,6 +641,7 @@ def run_repo_pipeline(
     print(f"{'=' * 50}\n")
 
     # Engineer + review loop.
+    review_passed = False
     for review_round in range(max_review_rounds):
         is_fix = review_round > 0
         step_label = f"engineer-fix-{review_round}" if is_fix else "engineer"
@@ -651,12 +652,21 @@ def run_repo_pipeline(
 
         print(f"\n  [{repo_name}] -> review (round {review_round + 1})")
         update_repo_step(slug, repo_name, f"review-{review_round + 1}", paths)
-        passed = step_review(slug, repo_name, paths)
+        review_passed = step_review(slug, repo_name, paths)
 
-        if passed:
+        if review_passed:
             print(f"  [{repo_name}] Review passed.")
+            update_repo_step(slug, repo_name, "review-passed", paths)
             break
         print(f"  [{repo_name}] Review: needs changes.")
+
+    if not review_passed:
+        print(
+            f"  [{repo_name}] [WARN] Review never passed after "
+            f"{max_review_rounds} rounds. Proceeding to PR anyway.",
+            file=sys.stderr,
+        )
+        update_repo_step(slug, repo_name, "review-not-passed", paths)
 
     # PR creation.
     print(f"\n  [{repo_name}] -> pr")
