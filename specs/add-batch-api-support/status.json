@@ -1,0 +1,52 @@
+{
+  "slug": "add-batch-api-support",
+  "triage_type": "feature",
+  "repos": [
+    "any-llm",
+    "gateway",
+    "any-llm-rust",
+    "any-llm-go",
+    "any-llm-ts"
+  ],
+  "current_phase": "designer",
+  "phases": {
+    "intake": {
+      "status": "done",
+      "finished_at": "2026-04-15T08:37:07.533397+00:00"
+    },
+    "pm": {
+      "status": "done",
+      "started_at": "2026-04-15T08:37:07.533965+00:00",
+      "finished_at": "2026-04-15T08:45:52.039400+00:00"
+    },
+    "debate": {
+      "status": "done",
+      "started_at": "2026-04-15T08:45:52.039764+00:00",
+      "finished_at": "2026-04-15T08:53:02.265626+00:00"
+    },
+    "designer": {
+      "status": "running",
+      "started_at": "2026-04-15T08:53:09.328253+00:00"
+    },
+    "architect": {
+      "status": "pending"
+    },
+    "workspace": {
+      "status": "pending"
+    },
+    "engineer": {
+      "status": "pending"
+    },
+    "review": {
+      "status": "pending"
+    },
+    "pr": {
+      "status": "pending"
+    },
+    "ci": {
+      "status": "pending"
+    }
+  },
+  "created_at": "2026-04-15T08:37:07.532409+00:00",
+  "updated_at": "2026-04-15T08:53:09.328308+00:00"
+}

@@ -1,0 +1,12 @@
+{
+  "type": "feature",
+  "repos": [
+    "any-llm",
+    "gateway",
+    "any-llm-rust",
+    "any-llm-go",
+    "any-llm-ts"
+  ],
+  "slug": "add-batch-api-support",
+  "reasoning": "This is a request for new functionality (batch API support) across all SDKs. It requires designing a batch API contract in the gateway, implementing the batch processing logic in the Python SDK (any-llm) which the gateway uses internally, exposing the batch endpoint from the gateway, and then adding batch API client support in each of the language SDKs (Rust, Go, TypeScript). The platform is not included because batch API is an SDK/gateway-level capability, not a platform management feature, though it may eventually need platform integration for observability. This is a cross-repo feature that needs coordinated API design."
+}

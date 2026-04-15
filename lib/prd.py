@@ -20,20 +20,23 @@ def run_pm(slug: str, paths: ProjectPaths) -> Path:
     The user interacts with the PM until they are satisfied, then exits.
     The PM writes the PRD to ``specs/<slug>/prd.md``.
     """
-    input_file = paths.spec_file(slug, "input.md")
+    spec_dir = paths.spec_dir(slug)
     prd_file = paths.spec_file(slug, "prd.md")
 
     print("\n── Phase 2: Product Manager ─────────────────────────")
-    print(f"  Input:  {input_file}")
-    print(f"  Output: {prd_file}")
+    print(f"  Working dir: {spec_dir}")
+    print(f"  Input:       input.md")
+    print(f"  Output:      prd.md")
     print("  The PM agent will open in a TUI session.")
     print("  Collaborate on the PRD, then exit when satisfied.")
     print("────────────────────────────────────────────────────\n")
 
     prompt = (
         f"You are acting as the Product Manager for this feature.\n\n"
-        f"Read the input in {input_file} and create a PRD.\n"
-        f"Write the PRD to: {prd_file}\n\n"
+        f"Read the input in input.md (in the current directory) and create a PRD.\n"
+        f"Write the PRD to: prd.md (in the current directory)\n\n"
+        f"ALL files you need to read or write are in the current directory.\n"
+        f"Do NOT access files outside this directory.\n\n"
         f"If anything is unclear, ask me questions before writing.\n"
         f"When you write the PRD, use the template structure from your system prompt."
     )
@@ -45,9 +48,9 @@ def run_pm(slug: str, paths: ProjectPaths) -> Path:
             "product-manager",
             "--prompt",
             prompt,
-            str(paths.root),
+            str(spec_dir),
         ],
-        cwd=str(paths.root),
+        cwd=str(spec_dir),
     )
 
     if not prd_file.exists():
@@ -68,21 +71,25 @@ def run_debate(slug: str, paths: ProjectPaths) -> Path:
 
     The user can participate in the debate. The PRD is refined in place.
     """
+    spec_dir = paths.spec_dir(slug)
     prd_file = paths.spec_file(slug, "prd.md")
 
     print("\n── Phase 3: PRD Debate ──────────────────────────────")
-    print(f"  PRD:    {prd_file}")
+    print(f"  Working dir: {spec_dir}")
+    print(f"  PRD:         prd.md")
     print("  The reviewer will critique the PRD.")
     print("  You can participate in the discussion.")
     print("  Exit when the PRD is satisfactory.")
     print("────────────────────────────────────────────────────\n")
 
     prompt = (
-        f"Review the PRD at {prd_file}.\n\n"
+        f"Review the PRD at prd.md (in the current directory).\n\n"
+        f"ALL files you need to read or write are in the current directory.\n"
+        f"Do NOT access files outside this directory.\n\n"
         f"Critique it thoroughly: check for missing edge cases, cross-repo "
         f"consistency, backwards compatibility, scope creep, and missing "
         f"acceptance criteria.\n\n"
-        f"After the discussion, update the PRD in place with improvements."
+        f"After the discussion, update prd.md in place with improvements."
     )
 
     subprocess.run(
@@ -92,9 +99,9 @@ def run_debate(slug: str, paths: ProjectPaths) -> Path:
             "reviewer",
             "--prompt",
             prompt,
-            str(paths.root),
+            str(spec_dir),
         ],
-        cwd=str(paths.root),
+        cwd=str(spec_dir),
     )
 
     return prd_file
@@ -175,25 +182,28 @@ def run_designer(slug: str, paths: ProjectPaths) -> Path:
 
     Only called when ``classify_design_need`` returns True.
     """
-    prd_file = paths.spec_file(slug, "prd.md")
+    spec_dir = paths.spec_dir(slug)
     design_file = paths.spec_file(slug, "design.md")
 
     print("\n── Phase 3.6: Product Designer ──────────────────────")
-    print(f"  PRD:    {prd_file}")
-    print(f"  Output: {design_file}")
+    print(f"  Working dir: {spec_dir}")
+    print(f"  PRD:         prd.md")
+    print(f"  Output:      design.md")
     print("  The designer will create UX/DX proposals.")
     print("  Collaborate with the designer, then exit.")
     print("────────────────────────────────────────────────────\n")
 
     prompt = (
-        f"Read the PRD at {prd_file}.\n\n"
+        f"Read the PRD at prd.md (in the current directory).\n\n"
+        f"ALL files you need to read or write are in the current directory.\n"
+        f"Do NOT access files outside this directory.\n\n"
         f"Create design proposals covering:\n"
         f"- User/developer flows and interactions\n"
         f"- SDK API ergonomics (method names, signatures, return types)\n"
         f"- Error handling UX\n"
         f"- CLI or configuration changes (if applicable)\n"
         f"- Documentation patterns\n\n"
-        f"Write the design document to: {design_file}"
+        f"Write the design document to: design.md (in the current directory)"
     )
 
     subprocess.run(
@@ -203,9 +213,9 @@ def run_designer(slug: str, paths: ProjectPaths) -> Path:
             "designer",
             "--prompt",
             prompt,
-            str(paths.root),
+            str(spec_dir),
         ],
-        cwd=str(paths.root),
+        cwd=str(spec_dir),
     )
 
     return design_file

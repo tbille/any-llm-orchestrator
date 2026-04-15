@@ -29,25 +29,23 @@ def run_architect(
     Returns:
         The final list of affected repo names (the architect may adjust it).
     """
-    prd_file = paths.spec_file(slug, "prd.md")
-    design_file = paths.spec_file(slug, "design.md")
-    input_file = paths.spec_file(slug, "input.md")
-    tech_spec_file = paths.spec_file(slug, "tech-spec.md")
+    spec_dir = paths.spec_dir(slug)
 
-    # The architect reads whichever context files exist.
-    context_files = []
-    for candidate in (prd_file, design_file, input_file):
-        if candidate.exists():
-            context_files.append(str(candidate))
+    # Check which context files exist (using relative names).
+    context_files: list[str] = []
+    for name in ("prd.md", "design.md", "input.md"):
+        if (spec_dir / name).exists():
+            context_files.append(name)
 
     mode_label = (
         "lightweight investigation spec" if light else "full technical specification"
     )
 
     print(f"\n── Phase 4: Architect ({mode_label}) ────────────────")
-    print(f"  Context:  {', '.join(context_files)}")
-    print(f"  Output:   {tech_spec_file}")
-    print(f"  Repos:    {', '.join(repo_names)}")
+    print(f"  Working dir: {spec_dir}")
+    print(f"  Context:     {', '.join(context_files)}")
+    print(f"  Output:      tech-spec.md + per-repo specs")
+    print(f"  Repos:       {', '.join(repo_names)}")
     print("  The architect agent will open in a TUI session.")
     print("  Collaborate on the tech spec, then exit.")
     print("────────────────────────────────────────────────────\n")
@@ -82,7 +80,9 @@ def run_architect(
 
     prompt = (
         f"You are the Technical Architect for this work.\n\n"
-        f"## Context files\n"
+        f"ALL files you need to read or write are in the current directory.\n"
+        f"Do NOT access files outside this directory.\n\n"
+        f"## Context files (in the current directory)\n"
         f"Read these files for the full context:\n"
         + "\n".join(f"- {f}" for f in context_files)
         + f"\n\n"
@@ -91,9 +91,9 @@ def run_architect(
         f"You may add or remove repos from this list if your analysis shows different needs.\n\n"
         f"## Task\n"
         f"{task_instruction}\n"
-        f"Write the overall tech spec to: {tech_spec_file}\n\n"
+        f"Write the overall tech spec to: tech-spec.md\n\n"
         f"Additionally, for EACH affected repo, write a standalone implementation spec to:\n"
-        f"  specs/{slug}/<repo-name>-spec.md\n\n"
+        f"  <repo-name>-spec.md (in the current directory)\n\n"
         f"Each per-repo spec should be self-contained: an engineer reading ONLY that file "
         f"(plus the shared interface section) should know exactly what to build.\n\n"
         f"IMPORTANT: At the end, output a line like:\n"
@@ -108,9 +108,9 @@ def run_architect(
             "architect",
             "--prompt",
             prompt,
-            str(paths.root),
+            str(spec_dir),
         ],
-        cwd=str(paths.root),
+        cwd=str(spec_dir),
     )
 
     # Try to determine the final repo list from the tech spec.
