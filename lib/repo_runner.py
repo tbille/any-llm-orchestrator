@@ -54,9 +54,14 @@ def _run_opencode(
     return result.returncode
 
 
-def _write_prompt(path: Path, message: str) -> None:
+# Phases where detailed, clear output matters more than token savings.
+_VERBOSE_PHASES = frozenset({"review", "cross-review", "pr"})
+
+
+def _write_prompt(path: Path, message: str, *, phase: str = "") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(CAVEMAN_PROMPT + message, encoding="utf-8")
+    prefix = "" if phase in _VERBOSE_PHASES else CAVEMAN_PROMPT
+    path.write_text(prefix + message, encoding="utf-8")
 
 
 # ── Step: Engineer ────────────────────────────────────────────────────
@@ -129,7 +134,7 @@ def step_engineer(
         )
 
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-engineer-prompt.md"
-    _write_prompt(prompt_file, message)
+    _write_prompt(prompt_file, message, phase="engineer")
     rc = _run_opencode(wt_path, prompt_file, file_args, log_file)
     if rc != 0:
         print(f"  [{repo_name}] Engineer agent exited with code {rc}", file=sys.stderr)
@@ -164,7 +169,7 @@ def step_review(slug: str, repo_name: str, paths: ProjectPaths) -> bool:
     )
 
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-review-prompt.md"
-    _write_prompt(prompt_file, message)
+    _write_prompt(prompt_file, message, phase="review")
     rc = _run_opencode(wt_path, prompt_file, file_args, log_file)
     if rc != 0:
         print(f"  [{repo_name}] Review agent exited with code {rc}", file=sys.stderr)
@@ -213,7 +218,7 @@ def step_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
     )
 
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-pr-prompt.md"
-    _write_prompt(prompt_file, message)
+    _write_prompt(prompt_file, message, phase="pr")
     rc = _run_opencode(wt_path, prompt_file, file_args, log_file)
     if rc != 0:
         print(f"  [{repo_name}] PR agent exited with code {rc}", file=sys.stderr)
@@ -283,7 +288,7 @@ def step_ci_watch(
         update_repo_step(slug, repo_name, f"ci-fix (round {fix_round + 1})", paths)
 
         prompt_file = paths.logs_dir(slug) / f"{repo_name}-ci-fix-prompt.md"
-        _write_prompt(prompt_file, message)
+        _write_prompt(prompt_file, message, phase="ci-fix")
         rc = _run_opencode(wt_path, prompt_file, file_args, log_file)
         if rc != 0:
             print(
@@ -501,7 +506,7 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
         file_args += ["-f", str(spec_file)]
 
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-pr-fix-prompt.md"
-    _write_prompt(prompt_file, message)
+    _write_prompt(prompt_file, message, phase="pr-fix")
     _run_opencode(wt_path, prompt_file, file_args, log_file)
 
     # Push the fixes.
@@ -556,7 +561,7 @@ def step_fix_cross_review(slug: str, repo_name: str, paths: ProjectPaths) -> Non
 
     print(f"  [{repo_name}] Fixing cross-review findings...")
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-xfix-prompt.md"
-    _write_prompt(prompt_file, message)
+    _write_prompt(prompt_file, message, phase="xfix")
     _run_opencode(wt_path, prompt_file, file_args, log_file)
 
     # Push the fixes.
