@@ -163,10 +163,31 @@ def update_repo_step(
         return
 
     repo_progress = data.setdefault("repo_progress", {})
-    repo_progress[repo_name] = {
-        "step": step,
-        "updated_at": _now(),
-    }
+    prev = repo_progress.get(repo_name, {})
+
+    now = _now()
+    entry: dict = {"step": step, "updated_at": now}
+
+    # Track when this step started.  If the step changed, record a
+    # new started_at; otherwise preserve the existing one.
+    if prev.get("step") != step:
+        entry["started_at"] = now
+        # Record previous step in history for timeline view.
+        history = prev.get("history", [])
+        if prev.get("step") and prev.get("started_at"):
+            history.append(
+                {
+                    "step": prev["step"],
+                    "started_at": prev["started_at"],
+                    "finished_at": now,
+                }
+            )
+        entry["history"] = history
+    else:
+        entry["started_at"] = prev.get("started_at", now)
+        entry["history"] = prev.get("history", [])
+
+    repo_progress[repo_name] = entry
 
     # Keep current_phase as "build" while repos are running.
     data["current_phase"] = "build"

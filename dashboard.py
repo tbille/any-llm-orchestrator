@@ -147,6 +147,19 @@ DASHBOARD_HTML = """\
   .cost-repo { font-size: 11px; color: var(--muted); font-family: monospace; }
   .log-toggle:hover { background: rgba(139,148,158,0.2); color: var(--text); }
 
+  /* Per-repo build steps */
+  .repo-steps { display: flex; gap: 3px; align-items: center; }
+  .step { display: inline-block; padding: 2px 6px; border-radius: 3px;
+          font-size: 10px; font-weight: 500; border: 1px solid transparent;
+          font-family: monospace; }
+  .step-done { background: rgba(63,185,80,0.15); color: var(--green); border-color: rgba(63,185,80,0.25); }
+  .step-running { background: rgba(88,166,255,0.15); color: var(--blue); border-color: rgba(88,166,255,0.25);
+                  animation: pulse 2s ease-in-out infinite; }
+  .step-pending { background: rgba(139,148,158,0.06); color: var(--muted); opacity: 0.5; }
+  .step-fail { background: rgba(248,81,73,0.15); color: var(--red); border-color: rgba(248,81,73,0.25); }
+  .repo-elapsed { font-size: 11px; color: var(--muted); margin-left: 6px; font-family: monospace; }
+  .build-count { font-size: 10px; opacity: 0.8; }
+
   .notif-banner { font-size: 12px; padding: 6px 12px; border-radius: 6px; cursor: pointer;
                   background: rgba(210,153,34,0.15); color: var(--yellow); border: 1px solid rgba(210,153,34,0.3); }
   .notif-banner:hover { background: rgba(210,153,34,0.25); }
@@ -255,32 +268,60 @@ function render(data) {
     const applicable = phases_by_type[f.triage_type] || all_phases;
     const typeClass = "type-" + f.triage_type;
 
-    // Phase bar
+    // Build step ordering for the mini pipeline indicators.
+    const BUILD_STEPS = ["engineer", "review", "pr", "ci-watch"];
+    const STEP_LABELS = { "engineer": "ENG", "review": "REV", "pr": "PR", "ci-watch": "CI" };
+
+    // Count completed repos for the build phase label.
+    const repoProgress = f.repo_progress || {};
+    const doneCount = Object.values(repoProgress).filter(p => p.step === "done").length;
+    const totalRepos = (f.repos || []).length;
+
+    // Phase bar (with build completion count).
     const phaseBar = all_phases.map(p => {
       if (!applicable.includes(p)) return "";
       const ps = (f.phases && f.phases[p]) || {};
       const st = ps.status || "pending";
-      const label = phase_labels[p] || p;
+      let label = phase_labels[p] || p;
+      if (p === "build" && totalRepos > 0) {
+        label += ' <span class="build-count">' + doneCount + "/" + totalRepos + "</span>";
+      }
       return '<div class="phase phase-' + st + '">' + ICONS[st] + " " + label + "</div>";
     }).join("");
 
-    // Repo table with log tails
+    // Helper functions.
+    function fmtSize(b) {
+      if (b >= 1048576) return (b / 1048576).toFixed(1) + " MB";
+      if (b >= 1024) return (b / 1024).toFixed(1) + " KB";
+      return b + " B";
+    }
+    function escHtml(s) { return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+    function fmtElapsed(isoStart) {
+      if (!isoStart) return "";
+      const secs = Math.floor((Date.now() - new Date(isoStart).getTime()) / 1000);
+      if (secs < 60) return secs + "s";
+      if (secs < 3600) return Math.floor(secs / 60) + "m";
+      return Math.floor(secs / 3600) + "h" + Math.floor((secs % 3600) / 60) + "m";
+    }
+
+    // Determine which build step index a repo is currently on.
+    function stepIndex(stepName) {
+      if (!stepName) return -1;
+      if (stepName === "done") return BUILD_STEPS.length;
+      // Match partial names: "review-1" -> "review", "engineer-fix-1" -> "engineer", "ci-fix" -> "ci-watch"
+      for (let i = 0; i < BUILD_STEPS.length; i++) {
+        if (stepName.startsWith(BUILD_STEPS[i]) || stepName.startsWith("ci-fix")) {
+          return stepName.startsWith("ci-fix") ? 3 : i;
+        }
+      }
+      return -1;
+    }
+
+    // Repo rows with mini step pipeline.
+    const prInfo = f.pr_info || {};
+    const logTails = f.log_tails || {};
     let repoRows = "";
     if (f.repos && f.repos.length) {
-      const currentPhase = f.current_phase || "";
-      const phaseRepos = (f.phases && f.phases[currentPhase] && f.phases[currentPhase].repos) || {};
-      const prInfo = f.pr_info || {};
-      const logTails = f.log_tails || {};
-
-      function fmtSize(b) {
-        if (b >= 1048576) return (b / 1048576).toFixed(1) + " MB";
-        if (b >= 1024) return (b / 1024).toFixed(1) + " KB";
-        return b + " B";
-      }
-      function escHtml(s) { return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
-
-      const repoProgress = f.repo_progress || {};
-
       repoRows = f.repos.map(r => {
         const pr = prInfo[r] || {};
         const prLink = pr.url ? '<a href="' + pr.url + '" target="_blank">PR</a>' : "";
@@ -288,28 +329,32 @@ function render(data) {
         const log = logTails[r] || {};
         const logLines = (log.last_lines || []).map(escHtml).join("\\n");
         const logSize = log.size_bytes ? '<span class="log-size">' + fmtSize(log.size_bytes) + '</span>' : '';
-        const logPhase = log.phase ? '<span class="log-phase">' + log.phase + '</span>' : '';
-        const logHtml = logLines
-          ? '<div class="log-tail">' + logLines + '</div>'
+        const logHtml = logLines ? '<div class="log-tail">' + logLines + '</div>' : '';
+
+        const progress = repoProgress[r] || {};
+        const currentStep = progress.step || "";
+        const currentIdx = stepIndex(currentStep);
+
+        // Build mini step indicators: [ENG] [REV] [PR] [CI]
+        const stepsHtml = BUILD_STEPS.map((s, i) => {
+          let cls = "step-pending";
+          let icon = "";
+          if (currentStep === "done" || i < currentIdx) {
+            cls = "step-done"; icon = "\u2713 ";
+          } else if (i === currentIdx) {
+            cls = "step-running"; icon = "\u21bb ";
+          }
+          return '<span class="step ' + cls + '">' + icon + STEP_LABELS[s] + "</span>";
+        }).join("");
+
+        // Elapsed time on current step.
+        const elapsed = (currentStep && currentStep !== "done")
+          ? '<span class="repo-elapsed">' + fmtElapsed(progress.started_at) + '</span>'
           : '';
 
-        // Per-repo build step from repo_progress (set by repo_runner.py).
-        const progress = repoProgress[r] || {};
-        const step = progress.step || phaseRepos[r] || "";
-
-        // Derive display status from step + log activity.
-        let displayStep = step;
-        let dotClass = "dot-running";
-        if (step === "done") {
-          dotClass = "dot-done";
-        } else if (step && log.size_bytes && !log.active) {
-          dotClass = "dot-pending";
-          displayStep = step + ' <span class="log-idle">(idle)</span>';
-        }
-
         return "<tr>" +
-          "<td><strong>" + r + "</strong> " + logSize + logPhase + "</td>" +
-          "<td>" + (step ? '<span class="status-dot ' + dotClass + '"></span>' + displayStep : "") + "</td>" +
+          "<td><strong>" + r + "</strong> " + logSize + "</td>" +
+          '<td><div class="repo-steps">' + stepsHtml + elapsed + "</div></td>" +
           "<td>" + prLink + "</td>" +
           "<td>" + (pr.url ? '<span class="status-dot dot-' + ciSt + '"></span>' + ciSt : "") + "</td>" +
           "</tr>" +
