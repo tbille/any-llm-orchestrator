@@ -286,6 +286,39 @@ def load_all_statuses(paths: ProjectPaths) -> list[dict]:
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
+_TAIL_READ_SIZE = 8192  # bytes to read from end of file for tail extraction
+
+
+def _read_tail(path: Path, n_lines: int) -> list[str]:
+    """Read the last *n_lines* non-empty lines from a file efficiently.
+
+    Instead of reading the entire file, seeks to the end and reads the
+    last ``_TAIL_READ_SIZE`` bytes, which is more than enough for a few
+    lines.  Falls back to reading more if needed.
+    """
+    try:
+        size = path.stat().st_size
+        if size == 0:
+            return []
+        read_size = min(size, _TAIL_READ_SIZE)
+        with path.open("rb") as fh:
+            fh.seek(max(0, size - read_size))
+            chunk = fh.read(read_size).decode("utf-8", errors="replace")
+
+        lines = chunk.splitlines()
+        tail: list[str] = []
+        for line in reversed(lines):
+            cleaned = _ANSI_RE.sub("", line).strip()
+            if cleaned:
+                tail.append(cleaned)
+            if len(tail) >= n_lines:
+                break
+        tail.reverse()
+        return tail
+    except OSError:
+        return []
+
+
 def get_log_tails(
     slug: str,
     repo_names: list[str],
@@ -325,20 +358,7 @@ def get_log_tails(
             mtime = stat.st_mtime
             active = (now - mtime) < active_threshold_secs
 
-            try:
-                raw = log_file.read_text(encoding="utf-8", errors="replace")
-                lines = raw.strip().splitlines()
-                # Take last N non-empty lines, strip ANSI codes.
-                tail = []
-                for line in reversed(lines):
-                    cleaned = _ANSI_RE.sub("", line).strip()
-                    if cleaned:
-                        tail.append(cleaned)
-                    if len(tail) >= tail_lines:
-                        break
-                tail.reverse()
-            except OSError:
-                tail = []
+            tail = _read_tail(log_file, tail_lines)
 
             info[name] = {
                 "size_bytes": size,
