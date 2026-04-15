@@ -197,9 +197,148 @@ def step_review(slug: str, repo_name: str, paths: ProjectPaths) -> bool:
 # ── Step: PR ──────────────────────────────────────────────────────────
 
 
-def step_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
-    """Create a pull request."""
+def _try_deterministic_pr(
+    slug: str,
+    repo_name: str,
+    wt_path: Path,
+    paths: ProjectPaths,
+    *,
+    draft: bool = False,
+) -> bool:
+    """Attempt to create a PR using shell commands only (no AI agent).
+
+    Steps:
+    1. Commit any uncommitted changes.
+    2. Push the branch.
+    3. Generate a PR body from the spec and commit log.
+    4. Create the PR via ``gh pr create``.
+
+    Returns True on success, False if the caller should fall back to
+    the AI agent (e.g. the repo has a complex PR template).
+    """
+    from lib.pr import _find_pr_template
+
+    # If the repo has a PR template, fall back to AI to fill it properly.
+    template = _find_pr_template(wt_path)
+    if template:
+        return False
+
+    repo_info = REPO_BY_NAME.get(repo_name)
+    base_branch = repo_info.default_branch if repo_info else "main"
+
+    # 1. Commit any uncommitted changes.
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=str(wt_path),
+        capture_output=True,
+        text=True,
+    )
+    if status.stdout.strip():
+        subprocess.run(
+            ["git", "add", "-A"],
+            cwd=str(wt_path),
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", f"Final uncommitted changes for {slug}"],
+            cwd=str(wt_path),
+            capture_output=True,
+        )
+
+    # 2. Push the branch.
+    push = subprocess.run(
+        ["git", "push", "-u", "origin", "HEAD"],
+        cwd=str(wt_path),
+        capture_output=True,
+        text=True,
+    )
+    if push.returncode != 0:
+        print(f"  [{repo_name}] git push failed: {push.stderr.strip()[:200]}")
+        return False
+
+    # 3. Generate PR title and body from commit log.
+    log_result = subprocess.run(
+        ["git", "log", f"origin/{base_branch}..HEAD", "--pretty=format:%s"],
+        cwd=str(wt_path),
+        capture_output=True,
+        text=True,
+    )
+    commits = (
+        log_result.stdout.strip().splitlines() if log_result.stdout.strip() else []
+    )
+    title = f"{slug}: {repo_name}"
+
+    # Build body from spec summary + commit list.
+    body_lines = ["## Summary", ""]
+    spec_file = paths.spec_file(slug, f"{repo_name}-spec.md")
+    if spec_file.exists():
+        # Use the first paragraph of the spec's Context section as summary.
+        spec_text = spec_file.read_text(encoding="utf-8")
+        for line in spec_text.splitlines():
+            if line.startswith("## Context"):
+                idx = spec_text.index(line) + len(line)
+                rest = spec_text[idx:].strip().split("\n\n")[0]
+                body_lines.append(rest.strip())
+                break
+        else:
+            body_lines.append(f"Implementation for {slug} in {repo_name}.")
+    else:
+        body_lines.append(f"Implementation for {slug} in {repo_name}.")
+
+    body_lines += ["", "## Changes", ""]
+    for commit in commits[:20]:
+        body_lines.append(f"- {commit}")
+
+    body_lines += ["", "## Testing", "", "- See commit history for test additions."]
+    body = "\n".join(body_lines)
+
+    # 4. Create the PR.
+    gh_cmd = [
+        "gh",
+        "pr",
+        "create",
+        "--title",
+        title,
+        "--body",
+        body,
+    ]
+    if draft:
+        gh_cmd.append("--draft")
+    pr_result = subprocess.run(
+        gh_cmd,
+        cwd=str(wt_path),
+        capture_output=True,
+        text=True,
+    )
+    if pr_result.returncode != 0:
+        print(f"  [{repo_name}] gh pr create failed: {pr_result.stderr.strip()[:200]}")
+        return False
+
+    pr_url = pr_result.stdout.strip()
+    print(f"  [{repo_name}] PR created: {pr_url}")
+    return True
+
+
+def step_pr(
+    slug: str,
+    repo_name: str,
+    paths: ProjectPaths,
+    *,
+    draft: bool = False,
+) -> None:
+    """Create a pull request.
+
+    Tries a fast deterministic path first (shell commands only).
+    Falls back to the AI agent if the repo has a PR template or if
+    the deterministic path fails.
+    """
     wt_path = paths.worktree_path(slug, repo_name)
+
+    # Fast path: no PR template, use shell commands.
+    if _try_deterministic_pr(slug, repo_name, wt_path, paths, draft=draft):
+        return
+
+    # Slow path: fall back to AI agent (PR template or deterministic failure).
     spec_file = paths.spec_file(slug, f"{repo_name}-spec.md")
     log_file = paths.logs_dir(slug) / f"{repo_name}-pr.log"
     repo_info = REPO_BY_NAME.get(repo_name)
@@ -220,6 +359,13 @@ def step_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
             f"It is attached. You MUST follow its structure when writing the PR body."
         )
 
+    draft_instruction = ""
+    if draft:
+        draft_instruction = (
+            " IMPORTANT: Create this PR as a DRAFT (use `gh pr create --draft`)."
+            " The code review did not fully pass, so this PR needs human review."
+        )
+
     repo_scope = _REPO_SCOPE_INSTRUCTION.format(repo_name=repo_name)
     message = (
         f"Create a pull request for the changes in this {lang} repository. "
@@ -229,7 +375,7 @@ def step_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
         f"3. Create a pull request using `gh pr create`. "
         f"4. Write a clear title and description summarizing the changes. "
         f"5. Reference the original issue if applicable."
-        f"{template_instruction}{repo_scope}"
+        f"{template_instruction}{draft_instruction}{repo_scope}"
     )
 
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-pr-prompt.md"
