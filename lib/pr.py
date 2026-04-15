@@ -79,15 +79,19 @@ def _build_pr_command(
         )
 
     message = (
-        f"Create a pull request for the changes in this {lang} repository.\n\n"
-        f"Steps:\n"
-        f"1. Review all uncommitted changes and commit them if needed.\n"
-        f"2. Push the branch to the remote.\n"
-        f"3. Create a pull request using `gh pr create`.\n"
-        f"4. Write a clear title and description summarizing the changes.\n"
-        f"5. Reference the original issue if applicable.\n"
+        f"Create a pull request for the changes in this {lang} repository. "
+        f"Steps: "
+        f"1. Review all uncommitted changes and commit them if needed. "
+        f"2. Push the branch to the remote. "
+        f"3. Create a pull request using `gh pr create`. "
+        f"4. Write a clear title and description summarizing the changes. "
+        f"5. Reference the original issue if applicable."
         f"{template_instruction}"
     )
+
+    prompt_file = paths.logs_dir(slug) / f"{repo_name}-pr-prompt.md"
+    prompt_file.parent.mkdir(parents=True, exist_ok=True)
+    prompt_file.write_text(message, encoding="utf-8")
 
     parts = [
         "opencode",
@@ -97,7 +101,8 @@ def _build_pr_command(
         "--dangerously-skip-permissions",
     ]
     parts += file_args
-    parts.append(shlex.quote(message))
+    parts += ["-f", shlex.quote(str(prompt_file))]
+    parts.append(shlex.quote("Follow the instructions in the attached prompt file."))
 
     cmd = " ".join(parts)
     return (
@@ -407,13 +412,15 @@ def _build_ci_fix_command(
 
     message = (
         f"The CI pipeline is failing for this {lang} project. "
-        f"The attached file lists the failed checks.\n\n"
-        f"1. Investigate the failures by running the linter and tests locally.\n"
-        f"2. Fix the issues.\n"
-        f"3. Make sure the linter passes and all tests pass.\n"
-        f"4. Commit your fixes.\n"
-        f"5. Do NOT push -- the orchestrator will handle that."
+        f"The attached file lists the failed checks. "
+        f"Investigate the failures by running the linter and tests locally. "
+        f"Fix the issues. Make sure the linter passes and all tests pass. "
+        f"Commit your fixes. Do NOT push -- the orchestrator will handle that."
     )
+
+    prompt_file = paths.logs_dir(slug) / f"{repo_name}-ci-fix-prompt.md"
+    prompt_file.parent.mkdir(parents=True, exist_ok=True)
+    prompt_file.write_text(message, encoding="utf-8")
 
     parts = [
         "opencode",
@@ -423,7 +430,8 @@ def _build_ci_fix_command(
         "--dangerously-skip-permissions",
     ]
     parts += file_args
-    parts.append(shlex.quote(message))
+    parts += ["-f", shlex.quote(str(prompt_file))]
+    parts.append(shlex.quote("Follow the instructions in the attached prompt file."))
 
     cmd = " ".join(parts)
     return f'{cmd} 2>&1 | tee {shlex.quote(str(log_file))}; echo "[CI FIX DONE: {repo_name}]"'

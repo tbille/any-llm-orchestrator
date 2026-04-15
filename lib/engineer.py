@@ -114,27 +114,27 @@ def _build_engineer_command(
     if review_file and review_file.exists():
         file_args += ["-f", str(review_file)]
 
-    lint_test_instructions = (
-        f"\n\nBefore committing, you MUST:\n"
-        f"1. Run the project's linter and fix all lint errors.\n"
-        f"2. Run the full test suite and make sure all tests pass.\n"
-        f"3. Only commit once lint and tests are green.\n"
-        f"Look at the project's config files (pyproject.toml, Cargo.toml, "
-        f"package.json, Makefile, etc.) to find the correct lint and test commands."
+    lint_test_suffix = (
+        " Before committing, you MUST: "
+        "run the project linter and fix all lint errors, "
+        "run the full test suite and make sure all tests pass, "
+        "only commit once lint and tests are green. "
+        "Look at the project config files (pyproject.toml, Cargo.toml, "
+        "package.json, Makefile, etc.) to find the correct lint and test commands."
     )
 
     if is_fix_round and review_file:
         message = (
             f"Review the code review feedback in the attached review file and "
             f"fix the issues found. This is a {lang} project."
-            f"{lint_test_instructions}"
+            f"{lint_test_suffix}"
         )
     else:
         message = (
             f"Implement the feature described in the attached spec for this "
             f"{lang} project. Follow the repository's existing patterns and "
             f"conventions. Write tests for your changes."
-            f"{lint_test_instructions}"
+            f"{lint_test_suffix}"
         )
 
     # For simple-bug path (no spec file), use the input directly.
@@ -145,8 +145,14 @@ def _build_engineer_command(
         message = (
             f"Fix the bug described in the attached issue for this {lang} project. "
             f"Follow the repository's existing patterns."
-            f"{lint_test_instructions}"
+            f"{lint_test_suffix}"
         )
+
+    # Write the prompt to a file to avoid shell escaping issues with
+    # multi-line strings passed through tmux.
+    prompt_file = paths.logs_dir(slug) / f"{repo_name}-engineer-prompt.md"
+    prompt_file.parent.mkdir(parents=True, exist_ok=True)
+    prompt_file.write_text(message, encoding="utf-8")
 
     parts = [
         "opencode",
@@ -156,7 +162,9 @@ def _build_engineer_command(
         "--dangerously-skip-permissions",
     ]
     parts += file_args
-    parts.append(shlex.quote(message))
+    # Pass prompt via file to avoid shell quoting issues in tmux.
+    parts += ["-f", shlex.quote(str(prompt_file))]
+    parts.append(shlex.quote("Follow the instructions in the attached prompt file."))
 
     # Wrap in a shell command that tees output to a log file.
     cmd = " ".join(parts)
@@ -239,20 +247,19 @@ def _build_review_command(
 
     message = (
         f"Review the code changes in this {lang} repository. "
-        f"Compare against the attached spec. Check for:\n"
-        f"- Spec compliance (does the implementation match requirements?)\n"
-        f"- Code quality and {lang}-idiomatic patterns\n"
-        f"- Test coverage\n"
-        f"- Error handling\n"
-        f"- Backwards compatibility\n\n"
-        f"Write your review to: {review_file}\n"
-        f"Use this format in the review file:\n"
-        f"## Status: PASS or NEEDS_CHANGES\n"
-        f"## Issues Found\n"
-        f"(list each issue)\n"
-        f"## Recommendations\n"
-        f"(list improvements)"
+        f"Compare against the attached spec. Check for: "
+        f"spec compliance, code quality and {lang}-idiomatic patterns, "
+        f"test coverage, error handling, backwards compatibility. "
+        f"Write your review to: {review_file} "
+        f"Use this format: "
+        f"## Status: PASS or NEEDS_CHANGES "
+        f"## Issues Found (list each issue) "
+        f"## Recommendations (list improvements)"
     )
+
+    prompt_file = paths.logs_dir(slug) / f"{repo_name}-review-prompt.md"
+    prompt_file.parent.mkdir(parents=True, exist_ok=True)
+    prompt_file.write_text(message, encoding="utf-8")
 
     parts = [
         "opencode",
@@ -262,7 +269,8 @@ def _build_review_command(
         "--dangerously-skip-permissions",
     ]
     parts += file_args
-    parts.append(shlex.quote(message))
+    parts += ["-f", shlex.quote(str(prompt_file))]
+    parts.append(shlex.quote("Follow the instructions in the attached prompt file."))
 
     cmd = " ".join(parts)
     return f'{cmd} 2>&1 | tee {shlex.quote(str(log_file))}; echo "[REVIEW DONE: {repo_name}]"'
