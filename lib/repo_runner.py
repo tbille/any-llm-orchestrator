@@ -46,6 +46,11 @@ def _run_opencode(
 
     cmd = " ".join(parts) + f" 2>&1 | tee -a {shlex.quote(str(log_file))}"
     result = subprocess.run(["sh", "-c", cmd], cwd=str(wt_path))
+    if result.returncode != 0:
+        print(
+            f"  [WARN] opencode exited with code {result.returncode}",
+            file=sys.stderr,
+        )
     return result.returncode
 
 
@@ -125,7 +130,9 @@ def step_engineer(
 
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-engineer-prompt.md"
     _write_prompt(prompt_file, message)
-    _run_opencode(wt_path, prompt_file, file_args, log_file)
+    rc = _run_opencode(wt_path, prompt_file, file_args, log_file)
+    if rc != 0:
+        print(f"  [{repo_name}] Engineer agent exited with code {rc}", file=sys.stderr)
 
 
 # ── Step: Review ──────────────────────────────────────────────────────
@@ -158,7 +165,9 @@ def step_review(slug: str, repo_name: str, paths: ProjectPaths) -> bool:
 
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-review-prompt.md"
     _write_prompt(prompt_file, message)
-    _run_opencode(wt_path, prompt_file, file_args, log_file)
+    rc = _run_opencode(wt_path, prompt_file, file_args, log_file)
+    if rc != 0:
+        print(f"  [{repo_name}] Review agent exited with code {rc}", file=sys.stderr)
 
     if review_file.exists():
         content = review_file.read_text(encoding="utf-8").upper()
@@ -205,7 +214,9 @@ def step_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
 
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-pr-prompt.md"
     _write_prompt(prompt_file, message)
-    _run_opencode(wt_path, prompt_file, file_args, log_file)
+    rc = _run_opencode(wt_path, prompt_file, file_args, log_file)
+    if rc != 0:
+        print(f"  [{repo_name}] PR agent exited with code {rc}", file=sys.stderr)
 
 
 # ── Step: CI watch ────────────────────────────────────────────────────
@@ -273,9 +284,22 @@ def step_ci_watch(
 
         prompt_file = paths.logs_dir(slug) / f"{repo_name}-ci-fix-prompt.md"
         _write_prompt(prompt_file, message)
-        _run_opencode(wt_path, prompt_file, file_args, log_file)
+        rc = _run_opencode(wt_path, prompt_file, file_args, log_file)
+        if rc != 0:
+            print(
+                f"  [{repo_name}] CI fix agent exited with code {rc}",
+                file=sys.stderr,
+            )
 
-        subprocess.run(["git", "push"], cwd=str(wt_path))
+        push_result = subprocess.run(
+            ["git", "push"], cwd=str(wt_path), capture_output=True, text=True
+        )
+        if push_result.returncode != 0:
+            print(
+                f"  [{repo_name}] git push failed after CI fix: "
+                f"{push_result.stderr.strip()[:200]}",
+                file=sys.stderr,
+            )
 
 
 # ── Step: Fix PR feedback ─────────────────────────────────────────────
@@ -482,8 +506,17 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
 
     # Push the fixes.
     print(f"  [{repo_name}] Pushing fixes...")
-    subprocess.run(["git", "push"], cwd=str(wt_path))
-    print(f"  [{repo_name}] PR fixes pushed.")
+    push_result = subprocess.run(
+        ["git", "push"], cwd=str(wt_path), capture_output=True, text=True
+    )
+    if push_result.returncode != 0:
+        print(
+            f"  [{repo_name}] git push failed after PR fix: "
+            f"{push_result.stderr.strip()[:200]}",
+            file=sys.stderr,
+        )
+    else:
+        print(f"  [{repo_name}] PR fixes pushed.")
     update_repo_step(slug, repo_name, "done", paths)
 
 
@@ -528,8 +561,17 @@ def step_fix_cross_review(slug: str, repo_name: str, paths: ProjectPaths) -> Non
 
     # Push the fixes.
     print(f"  [{repo_name}] Pushing cross-review fixes...")
-    subprocess.run(["git", "push"], cwd=str(wt_path))
-    print(f"  [{repo_name}] Cross-review fixes pushed.")
+    push_result = subprocess.run(
+        ["git", "push"], cwd=str(wt_path), capture_output=True, text=True
+    )
+    if push_result.returncode != 0:
+        print(
+            f"  [{repo_name}] git push failed after cross-review fix: "
+            f"{push_result.stderr.strip()[:200]}",
+            file=sys.stderr,
+        )
+    else:
+        print(f"  [{repo_name}] Cross-review fixes pushed.")
 
 
 def run_cross_review_fix_pipeline(

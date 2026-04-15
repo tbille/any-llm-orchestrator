@@ -218,7 +218,7 @@ def run_cross_repo_review(
     print(f"  Output: {cross_review_file}")
     print("  Running cross-repo review (headless)...\n")
 
-    subprocess.run(
+    result = subprocess.run(
         [
             "opencode",
             "run",
@@ -231,6 +231,12 @@ def run_cross_repo_review(
         ],
         cwd=str(paths.root),
     )
+
+    if result.returncode != 0:
+        print(
+            f"  [WARN] Cross-repo review agent exited with code {result.returncode}",
+            file=sys.stderr,
+        )
 
     print("  Cross-repo review complete.\n")
 
