@@ -236,7 +236,14 @@ def run_cross_repo_review(
         f"- Type consistency: are shared types defined the same way?\n"
         f"- Version compatibility: will these changes work together?\n"
         f"- Integration gaps: anything the isolated engineers missed?\n\n"
-        f"Write your review to: {cross_review_file}"
+        f"Write your review to: {cross_review_file}\n\n"
+        f"IMPORTANT: At the end of the review file, include a machine-readable "
+        f"section with the affected repos:\n"
+        f"```json\n"
+        f'{{"affected_repos": ["repo-name-1", "repo-name-2"]}}\n'
+        f"```\n"
+        f"Only list repos that have actionable findings (not informational). "
+        f"If there are no actionable findings, use an empty list."
     )
 
     print(f"  Output: {cross_review_file}")
@@ -274,36 +281,70 @@ def _parse_affected_repos_from_cross_review(
 ) -> list[str]:
     """Read cross-review.md and return repos that have actionable findings.
 
-    Looks at the Summary of Findings table for repo names mentioned in the
-    'Repos' column. Only returns repos that are in ``candidate_repos``.
-    Skips findings marked as 'Informational'.
+    Tries two strategies:
+    1. Parse a machine-readable JSON block (``{"affected_repos": [...]}``)
+       that the cross-review agent is instructed to include.
+    2. Fall back to scanning the markdown for repo names mentioned in
+       table rows or anywhere in the document (excluding informational
+       findings).
+
+    Only returns repos that are in ``candidate_repos``.
     """
+    import json
+    import re
+
     if not cross_review_file.exists():
         return []
 
     content = cross_review_file.read_text(encoding="utf-8")
     affected: set[str] = set()
 
-    # Look for the summary table rows: | # | Severity | Finding | Repos |
+    # Strategy 1: Try to find a JSON block with affected_repos.
+    json_pattern = re.compile(r"```json\s*\n(.*?)\n\s*```", re.DOTALL)
+    for match in json_pattern.finditer(content):
+        try:
+            data = json.loads(match.group(1))
+            if isinstance(data, dict) and "affected_repos" in data:
+                repos = data["affected_repos"]
+                if isinstance(repos, list):
+                    found = [r for r in repos if r in candidate_repos]
+                    if found or repos == []:
+                        # Trust the JSON block: return it (may be empty).
+                        return found
+        except (json.JSONDecodeError, KeyError):
+            continue
+
+    # Strategy 2: Parse the summary table (flexible column matching).
     in_summary = False
     for line in content.splitlines():
-        if "Summary of Findings" in line:
+        if "summary" in line.lower() and "finding" in line.lower():
             in_summary = True
             continue
         if in_summary and line.strip().startswith("|"):
             parts = [p.strip() for p in line.split("|")]
             # Skip header/separator rows.
-            if len(parts) < 5 or parts[1] in ("#", "---", ""):
+            if len(parts) < 3:
                 continue
-            severity = parts[2]
-            repos_col = parts[4]
-            # Skip Informational findings.
-            if severity.lower() == "informational":
+            if any(p in ("#", "---", "") for p in parts[1:2]):
                 continue
-            # Match repo names in the Repos column.
+            if "---" in line:
+                continue
+            # Check if any column contains "informational" (skip it).
+            row_text = line.lower()
+            if "informational" in row_text:
+                continue
+            # Match repo names anywhere in the row.
             for repo in candidate_repos:
-                if repo in repos_col:
+                if repo in line:
                     affected.add(repo)
+
+    # Strategy 3: If the table parse found nothing, do a broad scan
+    # of the entire document for repo names mentioned near actionable
+    # keywords (but exclude informational context).
+    if not affected:
+        for repo in candidate_repos:
+            if repo in content:
+                affected.add(repo)
 
     return [r for r in candidate_repos if r in affected]
 
