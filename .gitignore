@@ -1,0 +1,17 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Cloned repositories (managed by the tool)
+repos/
+
+# Worktrees inside specs are managed by the tool
+specs/*/repos/
+specs/*/logs/

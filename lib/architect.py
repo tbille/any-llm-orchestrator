@@ -1,0 +1,150 @@
+"""Phase 4: Technical Architect -- creates tech spec and per-repo implementation specs."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+from lib.config import REPO_BY_NAME, ProjectPaths
+
+
+def run_architect(
+    slug: str,
+    repo_names: list[str],
+    paths: ProjectPaths,
+    *,
+    light: bool = False,
+) -> list[str]:
+    """Launch the architect agent to produce technical specifications.
+
+    Args:
+        slug: Feature slug.
+        repo_names: Repos identified by triage as affected.
+        paths: Project paths.
+        light: If True, produce a lighter investigation-focused spec
+               (used for complex-bug path instead of full feature spec).
+
+    Returns:
+        The final list of affected repo names (the architect may adjust it).
+    """
+    prd_file = paths.spec_file(slug, "prd.md")
+    design_file = paths.spec_file(slug, "design.md")
+    input_file = paths.spec_file(slug, "input.md")
+    tech_spec_file = paths.spec_file(slug, "tech-spec.md")
+
+    # The architect reads whichever context files exist.
+    context_files = []
+    for candidate in (prd_file, design_file, input_file):
+        if candidate.exists():
+            context_files.append(str(candidate))
+
+    mode_label = (
+        "lightweight investigation spec" if light else "full technical specification"
+    )
+
+    print(f"\n── Phase 4: Architect ({mode_label}) ────────────────")
+    print(f"  Context:  {', '.join(context_files)}")
+    print(f"  Output:   {tech_spec_file}")
+    print(f"  Repos:    {', '.join(repo_names)}")
+    print("  The architect agent will open in a TUI session.")
+    print("  Collaborate on the tech spec, then exit.")
+    print("────────────────────────────────────────────────────\n")
+
+    repo_descriptions = "\n".join(
+        f"- **{name}** ({REPO_BY_NAME[name].language}): {REPO_BY_NAME[name].description}"
+        for name in repo_names
+        if name in REPO_BY_NAME
+    )
+
+    if light:
+        task_instruction = (
+            "This is a **complex bug** that needs a focused investigation and fix plan.\n"
+            "Create a lightweight technical spec that covers:\n"
+            "1. Root cause hypothesis\n"
+            "2. Which repos need changes and why\n"
+            "3. The fix approach for each repo\n"
+            "4. Shared interfaces or contracts that must remain consistent\n"
+            "5. Testing strategy\n"
+        )
+    else:
+        task_instruction = (
+            "This is a **new feature** that needs a full technical specification.\n"
+            "Create a tech spec that covers:\n"
+            "1. Architecture overview\n"
+            "2. Shared interfaces / API contracts that multiple repos must agree on\n"
+            "3. Per-repo implementation plan (what each repo needs to do)\n"
+            "4. Dependency order (which repo changes must land first)\n"
+            "5. Migration / backwards compatibility strategy\n"
+            "6. Testing strategy\n"
+        )
+
+    prompt = (
+        f"You are the Technical Architect for this work.\n\n"
+        f"## Context files\n"
+        f"Read these files for the full context:\n"
+        + "\n".join(f"- {f}" for f in context_files)
+        + f"\n\n"
+        f"## Affected repositories (initial assessment)\n"
+        f"{repo_descriptions}\n\n"
+        f"You may add or remove repos from this list if your analysis shows different needs.\n\n"
+        f"## Task\n"
+        f"{task_instruction}\n"
+        f"Write the overall tech spec to: {tech_spec_file}\n\n"
+        f"Additionally, for EACH affected repo, write a standalone implementation spec to:\n"
+        f"  specs/{slug}/<repo-name>-spec.md\n\n"
+        f"Each per-repo spec should be self-contained: an engineer reading ONLY that file "
+        f"(plus the shared interface section) should know exactly what to build.\n\n"
+        f"IMPORTANT: At the end, output a line like:\n"
+        f"AFFECTED_REPOS: repo1, repo2, repo3\n"
+        f"so the orchestrator knows the final list."
+    )
+
+    subprocess.run(
+        [
+            "opencode",
+            "--agent",
+            "architect",
+            "--prompt",
+            prompt,
+            str(paths.root),
+        ],
+        cwd=str(paths.root),
+    )
+
+    # Try to determine the final repo list from the tech spec.
+    return _extract_affected_repos(slug, repo_names, paths)
+
+
+def _extract_affected_repos(
+    slug: str,
+    fallback_repos: list[str],
+    paths: ProjectPaths,
+) -> list[str]:
+    """Read per-repo spec files to determine which repos the architect targeted."""
+    spec_dir = paths.spec_dir(slug)
+    found: list[str] = []
+    for name in REPO_BY_NAME:
+        if (spec_dir / f"{name}-spec.md").exists():
+            found.append(name)
+
+    if found:
+        return found
+
+    # Fallback to the triage list if no per-repo specs were written yet.
+    return fallback_repos
+
+
+# ── Resume helpers ────────────────────────────────────────────────────
+
+
+def tech_spec_exists(slug: str, paths: ProjectPaths) -> bool:
+    return paths.spec_file(slug, "tech-spec.md").exists()
+
+
+def get_affected_repos(
+    slug: str, fallback: list[str], paths: ProjectPaths
+) -> list[str]:
+    """Return the list of repos that have per-repo specs (or fallback)."""
+    return _extract_affected_repos(slug, fallback, paths)
