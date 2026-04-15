@@ -126,6 +126,8 @@ DASHBOARD_HTML = """\
               max-height: 80px; overflow: hidden; }
   .logs-hidden .log-tail { display: none; }
   .log-size { font-size: 11px; color: var(--muted); font-family: monospace; }
+  .log-active { color: var(--green); }
+  .log-idle { color: var(--yellow); }
   .log-phase { font-size: 10px; padding: 1px 5px; border-radius: 3px;
                background: rgba(139,148,158,0.12); color: var(--muted); margin-left: 6px; }
   .log-toggle { font-size: 12px; padding: 3px 10px; border-radius: 4px; cursor: pointer;
@@ -278,9 +280,21 @@ function render(data) {
           ? '<div class="log-tail">' + logLines + '</div>'
           : '';
 
+        // Derive live status from log activity when phase status is "running".
+        let liveStatus = rs;
+        if (rs === "running" && log.size_bytes) {
+          if (log.active) {
+            liveStatus = "running";
+          } else {
+            liveStatus = "idle";
+          }
+        }
+        const statusDotClass = liveStatus === "idle" ? "dot-pending" : ("dot-" + liveStatus);
+        const statusLabel = liveStatus === "idle" ? '<span class="log-idle">idle</span>' : liveStatus;
+
         return "<tr>" +
           "<td><strong>" + r + "</strong> " + logSize + logPhase + "</td>" +
-          "<td>" + (rs ? '<span class="status-dot dot-' + rs + '"></span>' + rs : "") + "</td>" +
+          "<td>" + (liveStatus ? '<span class="status-dot ' + statusDotClass + '"></span>' + statusLabel : "") + "</td>" +
           "<td>" + prLink + "</td>" +
           "<td>" + (pr.url ? '<span class="status-dot dot-' + ciSt + '"></span>' + ciSt : "") + "</td>" +
           "</tr>" +

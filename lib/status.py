@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -185,6 +186,7 @@ def get_log_tails(
     paths: ProjectPaths,
     *,
     tail_lines: int = 3,
+    active_threshold_secs: float = 30.0,
 ) -> dict[str, dict]:
     """Read the last few lines and size of each agent log file.
 
@@ -192,12 +194,16 @@ def get_log_tails(
         "size_bytes": int,
         "last_lines": list[str],   # stripped of ANSI codes
         "phase": str,              # which log was found (engineer/review/pr/ci-fix)
+        "active": bool,            # True if the log was modified recently
+        "mtime": str,              # ISO timestamp of last modification
     }.
     """
     info: dict[str, dict] = {}
     logs_dir = paths.logs_dir(slug)
     if not logs_dir.exists():
         return info
+
+    now = time.time()
 
     # Check logs in priority order (most recent phase first).
     log_phases = ("ci-fix", "pr", "review", "engineer")
@@ -208,7 +214,11 @@ def get_log_tails(
             if not log_file.exists() or log_file.stat().st_size == 0:
                 continue
 
-            size = log_file.stat().st_size
+            stat = log_file.stat()
+            size = stat.st_size
+            mtime = stat.st_mtime
+            active = (now - mtime) < active_threshold_secs
+
             try:
                 raw = log_file.read_text(encoding="utf-8", errors="replace")
                 lines = raw.strip().splitlines()
@@ -228,6 +238,8 @@ def get_log_tails(
                 "size_bytes": size,
                 "last_lines": tail,
                 "phase": phase,
+                "active": active,
+                "mtime": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
             }
             break  # Use the most recent phase log found.
 
