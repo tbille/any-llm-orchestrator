@@ -41,10 +41,13 @@ def _build_api_response() -> dict:
         # Log tails for active agents.
         feat["log_tails"] = get_log_tails(slug, feat.get("repos", []), paths)
 
-        # Only query PR/CI info if we're past the PR phase.
+        # Query PR/CI info during build phase (repos create PRs
+        # independently) and any phase after it.
         current = feat.get("current_phase", "")
-        pr_phase = feat.get("phases", {}).get("pr", {})
-        if pr_phase.get("status") in ("done", "running") or current == "ci":
+        if (
+            current in ("build", "cross-review")
+            or feat.get("phases", {}).get("build", {}).get("status") == "done"
+        ):
             feat["pr_info"] = get_pr_info_for_feature(
                 slug, feat.get("repos", []), paths
             )
@@ -159,6 +162,19 @@ DASHBOARD_HTML = """\
   .step-fail { background: rgba(248,81,73,0.15); color: var(--red); border-color: rgba(248,81,73,0.25); }
   .repo-elapsed { font-size: 11px; color: var(--muted); margin-left: 6px; font-family: monospace; }
   .build-count { font-size: 10px; opacity: 0.8; }
+
+  /* Step history */
+  .step-history { padding: 4px 10px; font-size: 11px; color: var(--muted);
+                  font-family: 'SF Mono', Menlo, Monaco, monospace; line-height: 1.6; }
+  .step-history .h-step { display: inline-block; padding: 1px 5px; border-radius: 3px;
+                          background: rgba(139,148,158,0.08); margin: 1px 0; }
+  .step-history .h-arrow { color: var(--muted); opacity: 0.4; margin: 0 2px; }
+  .step-history .h-dur { color: var(--muted); font-size: 10px; }
+  .step-history .h-fail { color: var(--red); }
+  .step-history .h-pass { color: var(--green); }
+  .hist-toggle { font-size: 10px; color: var(--muted); cursor: pointer; margin-left: 6px;
+                 opacity: 0.6; }
+  .hist-toggle:hover { opacity: 1; color: var(--accent); }
 
   .notif-banner { font-size: 12px; padding: 6px 12px; border-radius: 6px; cursor: pointer;
                   background: rgba(210,153,34,0.15); color: var(--yellow); border: 1px solid rgba(210,153,34,0.3); }
@@ -317,14 +333,46 @@ function render(data) {
       return -1;
     }
 
-    // Repo rows with mini step pipeline.
+    // Format a duration in seconds to human-readable.
+    function fmtDuration(startIso, endIso) {
+      if (!startIso || !endIso) return "";
+      const secs = Math.floor((new Date(endIso) - new Date(startIso)) / 1000);
+      if (secs < 60) return secs + "s";
+      if (secs < 3600) return Math.floor(secs / 60) + "m";
+      return Math.floor(secs / 3600) + "h" + Math.floor((secs % 3600) / 60) + "m";
+    }
+
+    // Build history timeline HTML for a repo.
+    function renderHistory(history, repoId) {
+      if (!history || !history.length) return "";
+      const hasBackAndForth = history.some(h => h.step && h.step.includes("fix"));
+      const items = history.map(h => {
+        const dur = fmtDuration(h.started_at, h.finished_at);
+        const name = (h.step || "?").toUpperCase().replace(/-/g, " ").replace("ENGINEER", "ENG").replace("REVIEW", "REV");
+        // Mark review failures (followed by an engineer-fix step).
+        let marker = "";
+        return '<span class="h-step">' + name +
+          (dur ? ' <span class="h-dur">' + dur + '</span>' : '') +
+          marker + '</span>';
+      }).join('<span class="h-arrow">\u2192</span>');
+
+      const toggleId = "hist-" + repoId.replace(/[^a-zA-Z0-9]/g, "-");
+      const label = history.length + " step" + (history.length !== 1 ? "s" : "") +
+        (hasBackAndForth ? " (fix loop)" : "");
+      return '<span class="hist-toggle" onclick="' +
+        "var el=document.getElementById('" + toggleId + "');el.style.display=el.style.display==='none'?'':'none'" +
+        '">\u25b8 ' + label + '</span>' +
+        '<div id="' + toggleId + '" class="step-history" style="display:none">' + items + '</div>';
+    }
+
+    // Repo rows with mini step pipeline + history + PR link.
     const prInfo = f.pr_info || {};
     const logTails = f.log_tails || {};
     let repoRows = "";
     if (f.repos && f.repos.length) {
       repoRows = f.repos.map(r => {
         const pr = prInfo[r] || {};
-        const prLink = pr.url ? '<a href="' + pr.url + '" target="_blank">PR</a>' : "";
+        const prLink = pr.url ? '<a href="' + pr.url + '" target="_blank">' + pr.url.split("/").pop() + '</a>' : "";
         const ciSt = pr.ci || "none";
         const log = logTails[r] || {};
         const logLines = (log.last_lines || []).map(escHtml).join("\\n");
@@ -334,6 +382,7 @@ function render(data) {
         const progress = repoProgress[r] || {};
         const currentStep = progress.step || "";
         const currentIdx = stepIndex(currentStep);
+        const history = progress.history || [];
 
         // Build mini step indicators: [ENG] [REV] [PR] [CI]
         const stepsHtml = BUILD_STEPS.map((s, i) => {
@@ -352,9 +401,12 @@ function render(data) {
           ? '<span class="repo-elapsed">' + fmtElapsed(progress.started_at) + '</span>'
           : '';
 
+        // History toggle (shows back-and-forth loops).
+        const histHtml = renderHistory(history, f.slug + "-" + r);
+
         return "<tr>" +
           "<td><strong>" + r + "</strong> " + logSize + "</td>" +
-          '<td><div class="repo-steps">' + stepsHtml + elapsed + "</div></td>" +
+          '<td><div class="repo-steps">' + stepsHtml + elapsed + histHtml + "</div></td>" +
           "<td>" + prLink + "</td>" +
           "<td>" + (pr.url ? '<span class="status-dot dot-' + ciSt + '"></span>' + ciSt : "") + "</td>" +
           "</tr>" +
