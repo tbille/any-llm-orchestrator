@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -170,6 +171,67 @@ def load_all_statuses(paths: ProjectPaths) -> list[dict]:
         if status is not None:
             results.append(status)
     return results
+
+
+# ── Live log data ─────────────────────────────────────────────────────
+
+# ANSI escape code pattern for stripping terminal colors from log lines.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def get_log_tails(
+    slug: str,
+    repo_names: list[str],
+    paths: ProjectPaths,
+    *,
+    tail_lines: int = 3,
+) -> dict[str, dict]:
+    """Read the last few lines and size of each agent log file.
+
+    Returns a map of repo name -> {
+        "size_bytes": int,
+        "last_lines": list[str],   # stripped of ANSI codes
+        "phase": str,              # which log was found (engineer/review/pr/ci-fix)
+    }.
+    """
+    info: dict[str, dict] = {}
+    logs_dir = paths.logs_dir(slug)
+    if not logs_dir.exists():
+        return info
+
+    # Check logs in priority order (most recent phase first).
+    log_phases = ("ci-fix", "pr", "review", "engineer")
+
+    for name in repo_names:
+        for phase in log_phases:
+            log_file = logs_dir / f"{name}-{phase}.log"
+            if not log_file.exists() or log_file.stat().st_size == 0:
+                continue
+
+            size = log_file.stat().st_size
+            try:
+                raw = log_file.read_text(encoding="utf-8", errors="replace")
+                lines = raw.strip().splitlines()
+                # Take last N non-empty lines, strip ANSI codes.
+                tail = []
+                for line in reversed(lines):
+                    cleaned = _ANSI_RE.sub("", line).strip()
+                    if cleaned:
+                        tail.append(cleaned)
+                    if len(tail) >= tail_lines:
+                        break
+                tail.reverse()
+            except OSError:
+                tail = []
+
+            info[name] = {
+                "size_bytes": size,
+                "last_lines": tail,
+                "phase": phase,
+            }
+            break  # Use the most recent phase log found.
+
+    return info
 
 
 # ── Live tmux data ────────────────────────────────────────────────────

@@ -17,6 +17,7 @@ from lib.status import (
     PHASE_LABELS,
     PHASES_BY_TYPE,
     get_live_tmux_sessions,
+    get_log_tails,
     get_pr_info_for_feature,
     load_all_statuses,
 )
@@ -35,6 +36,9 @@ def _build_api_response() -> dict:
     for feat in features:
         slug = feat.get("slug", "")
         feat["tmux_sessions"] = tmux.get(slug, [])
+
+        # Log tails for active agents.
+        feat["log_tails"] = get_log_tails(slug, feat.get("repos", []), paths)
 
         # Only query PR/CI info if we're past the PR phase.
         current = feat.get("current_phase", "")
@@ -114,6 +118,16 @@ DASHBOARD_HTML = """\
   .dot-none, .dot-skipped { background: var(--muted); opacity: 0.4; }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
+
+  /* Log tail */
+  .log-tail { margin-top: 4px; padding: 6px 10px; background: var(--bg); border-radius: 4px;
+              font-family: 'SF Mono', Menlo, Monaco, 'Courier New', monospace; font-size: 11px;
+              color: var(--muted); line-height: 1.5; white-space: pre-wrap; word-break: break-all;
+              max-height: 80px; overflow: hidden; }
+  .log-size { font-size: 11px; color: var(--muted); font-family: monospace; }
+  .log-phase { font-size: 10px; padding: 1px 5px; border-radius: 3px;
+               background: rgba(139,148,158,0.12); color: var(--muted); margin-left: 6px; }
+
   .notif-banner { font-size: 12px; padding: 6px 12px; border-radius: 6px; cursor: pointer;
                   background: rgba(210,153,34,0.15); color: var(--yellow); border: 1px solid rgba(210,153,34,0.3); }
   .notif-banner:hover { background: rgba(210,153,34,0.25); }
@@ -215,23 +229,41 @@ function render(data) {
       return '<div class="phase phase-' + st + '">' + ICONS[st] + " " + label + "</div>";
     }).join("");
 
-    // Repo table
+    // Repo table with log tails
     let repoRows = "";
     if (f.repos && f.repos.length) {
       const currentPhase = f.current_phase || "";
       const phaseRepos = (f.phases && f.phases[currentPhase] && f.phases[currentPhase].repos) || {};
       const prInfo = f.pr_info || {};
+      const logTails = f.log_tails || {};
+
+      function fmtSize(b) {
+        if (b >= 1048576) return (b / 1048576).toFixed(1) + " MB";
+        if (b >= 1024) return (b / 1024).toFixed(1) + " KB";
+        return b + " B";
+      }
+      function escHtml(s) { return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
       repoRows = f.repos.map(r => {
         const rs = phaseRepos[r] || "";
         const pr = prInfo[r] || {};
         const prLink = pr.url ? '<a href="' + pr.url + '" target="_blank">PR</a>' : "";
         const ciSt = pr.ci || "none";
+        const log = logTails[r] || {};
+        const logLines = (log.last_lines || []).map(escHtml).join("\\n");
+        const logSize = log.size_bytes ? '<span class="log-size">' + fmtSize(log.size_bytes) + '</span>' : '';
+        const logPhase = log.phase ? '<span class="log-phase">' + log.phase + '</span>' : '';
+        const logHtml = logLines
+          ? '<div class="log-tail">' + logLines + '</div>'
+          : '';
+
         return "<tr>" +
-          "<td><strong>" + r + "</strong></td>" +
+          "<td><strong>" + r + "</strong> " + logSize + logPhase + "</td>" +
           "<td>" + (rs ? '<span class="status-dot dot-' + rs + '"></span>' + rs : "") + "</td>" +
           "<td>" + prLink + "</td>" +
           "<td>" + (pr.url ? '<span class="status-dot dot-' + ciSt + '"></span>' + ciSt : "") + "</td>" +
-          "</tr>";
+          "</tr>" +
+          (logHtml ? "<tr><td colspan='4'>" + logHtml + "</td></tr>" : "");
       }).join("");
     }
 
