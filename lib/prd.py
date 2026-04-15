@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from lib.config import ProjectPaths
+from lib.intake import _extract_reply
 
 
 # ── Phase 2: Product Manager (interactive TUI) ───────────────────────
@@ -148,15 +149,18 @@ def classify_design_need(slug: str, paths: ProjectPaths) -> bool:
             "--dir",
             str(paths.root),
             "--dangerously-skip-permissions",
+            "--format",
+            "json",
             prompt,
         ],
         capture_output=True,
         text=True,
     )
 
-    reply = result.stdout.strip()
+    # Use the same JSON event stream parser as the triage classifier.
+    reply = _extract_reply(result.stdout)
 
-    # Extract JSON from reply.
+    # Extract the JSON object from the reply text.
     try:
         brace_start = reply.find("{")
         brace_end = reply.rfind("}")
