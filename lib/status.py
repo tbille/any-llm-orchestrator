@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,13 +28,27 @@ ALL_PHASES = (
     "architect",
     "build",
     "cross-review",
+    "cross-review-fix",
 )
 
 # Phases used per triage path.
 PHASES_BY_TYPE = {
     "feature": ALL_PHASES,
-    "complex-bug": ("intake", "workspace", "architect", "build", "cross-review"),
-    "simple-bug": ("intake", "workspace", "build", "cross-review"),
+    "complex-bug": (
+        "intake",
+        "workspace",
+        "architect",
+        "build",
+        "cross-review",
+        "cross-review-fix",
+    ),
+    "simple-bug": (
+        "intake",
+        "workspace",
+        "build",
+        "cross-review",
+        "cross-review-fix",
+    ),
 }
 
 PHASE_LABELS = {
@@ -45,6 +60,7 @@ PHASE_LABELS = {
     "architect": "Architect",
     "build": "Build",
     "cross-review": "X-Review",
+    "cross-review-fix": "X-Fix",
 }
 
 
@@ -189,8 +205,15 @@ def update_repo_step(
 
     repo_progress[repo_name] = entry
 
-    # Keep current_phase as "build" while repos are running.
-    data["current_phase"] = "build"
+    # Keep current_phase updated while repos are running.
+    # Guard: only set it if the relevant phase hasn't already completed,
+    # so that late repo-step updates don't regress current_phase.
+    xfix_status = data.get("phases", {}).get("cross-review-fix", {}).get("status")
+    build_status = data.get("phases", {}).get("build", {}).get("status")
+    if xfix_status in ("running",):
+        data["current_phase"] = "cross-review-fix"
+    elif build_status not in ("done", "failed"):
+        data["current_phase"] = "build"
 
     _save_status(slug, data, paths)
 
@@ -305,7 +328,7 @@ def get_live_tmux_sessions() -> dict[str, list[str]]:
     for line in result.stdout.strip().splitlines():
         name = line.strip()
         # Parse prefix-slug pattern.
-        for prefix in ("build-", "eng-", "review-", "pr-", "ci-fix-"):
+        for prefix in ("xfix-", "build-", "eng-", "review-", "pr-", "ci-fix-"):
             if name.startswith(prefix):
                 slug = name[len(prefix) :]
                 # Handle suffixes like "-fix".
@@ -319,39 +342,40 @@ def get_live_tmux_sessions() -> dict[str, list[str]]:
 # ── Live PR / CI data ─────────────────────────────────────────────────
 
 
-def get_pr_info_for_feature(
-    slug: str,
-    repo_names: list[str],
-    paths: ProjectPaths,
-) -> dict[str, dict]:
-    """Query ``gh`` for PR URL and check status per repo.
+_GH_TIMEOUT = 10  # seconds – prevents a hung gh call from blocking the API
 
-    Returns a map of repo name -> {"url": ..., "ci": "pass"|"fail"|"pending"|"none"}.
+
+def _query_single_repo_pr(
+    wt_path: Path,
+) -> dict:
+    """Query ``gh`` for a single repo's PR URL and CI status.
+
+    Returns ``{"url": ..., "ci": "pass"|"fail"|"pending"|"none"}``.
     """
-    info: dict[str, dict] = {}
-    for name in repo_names:
-        wt_path = paths.worktree_path(slug, name)
-        if not wt_path.exists():
-            info[name] = {"url": None, "ci": "none"}
-            continue
-
-        # Get PR URL.
+    # Get PR URL.
+    url: str | None = None
+    try:
         pr_result = subprocess.run(
             ["gh", "pr", "view", "--json", "url", "--jq", ".url"],
             cwd=str(wt_path),
             capture_output=True,
             text=True,
+            timeout=_GH_TIMEOUT,
         )
         url = pr_result.stdout.strip() if pr_result.returncode == 0 else None
+    except subprocess.TimeoutExpired:
+        url = None
 
-        # Get CI status.  gh pr checks uses "state" not "conclusion".
+    # Get CI status.  gh pr checks uses "state" not "conclusion".
+    ci = "none"
+    try:
         ci_result = subprocess.run(
             ["gh", "pr", "checks", "--json", "name,state"],
             cwd=str(wt_path),
             capture_output=True,
             text=True,
+            timeout=_GH_TIMEOUT,
         )
-        ci = "none"
         if ci_result.returncode == 0:
             try:
                 checks = json.loads(ci_result.stdout)
@@ -375,6 +399,45 @@ def get_pr_info_for_feature(
                     ci = "pending"
             except json.JSONDecodeError:
                 ci = "none"
+    except subprocess.TimeoutExpired:
+        ci = "none"
 
-        info[name] = {"url": url, "ci": ci}
+    return {"url": url, "ci": ci}
+
+
+def get_pr_info_for_feature(
+    slug: str,
+    repo_names: list[str],
+    paths: ProjectPaths,
+) -> dict[str, dict]:
+    """Query ``gh`` for PR URL and check status per repo.
+
+    Returns a map of repo name -> {"url": ..., "ci": "pass"|"fail"|"pending"|"none"}.
+
+    Each ``gh`` invocation is capped at :data:`_GH_TIMEOUT` seconds so that
+    a single slow or unreachable call cannot block the dashboard API response.
+    Repos are queried in parallel to avoid O(n * timeout) latency.
+    """
+    info: dict[str, dict] = {}
+    to_query: dict[str, Path] = {}
+
+    for name in repo_names:
+        wt_path = paths.worktree_path(slug, name)
+        if not wt_path.exists():
+            info[name] = {"url": None, "ci": "none"}
+        else:
+            to_query[name] = wt_path
+
+    if to_query:
+        with ThreadPoolExecutor(max_workers=len(to_query)) as pool:
+            futures = {
+                name: pool.submit(_query_single_repo_pr, wt_path)
+                for name, wt_path in to_query.items()
+            }
+            for name, future in futures.items():
+                try:
+                    info[name] = future.result(timeout=_GH_TIMEOUT + 2)
+                except Exception:
+                    info[name] = {"url": None, "ci": "none"}
+
     return info

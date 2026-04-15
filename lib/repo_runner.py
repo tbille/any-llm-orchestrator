@@ -290,6 +290,7 @@ def step_ci_watch(
 
 def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
     """Fetch PR review comments and send the engineer to address them."""
+    update_repo_step(slug, repo_name, "fix-pr", paths)
     wt_path = paths.worktree_path(slug, repo_name)
     repo_info = REPO_BY_NAME.get(repo_name)
     lang = repo_info.language if repo_info else "unknown"
@@ -314,6 +315,7 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
         print(
             f"  [{repo_name}] No PR found or gh error: {pr_data.stderr.strip()[:100]}"
         )
+        update_repo_step(slug, repo_name, "done", paths)
         return
 
     import json as _json
@@ -322,6 +324,7 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
         data = _json.loads(pr_data.stdout)
     except _json.JSONDecodeError:
         print(f"  [{repo_name}] Could not parse PR data.")
+        update_repo_step(slug, repo_name, "done", paths)
         return
 
     # Also fetch inline review comments.
@@ -384,6 +387,7 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
 
     if not reviews and not comments:
         print(f"  [{repo_name}] No review comments found on the PR.")
+        update_repo_step(slug, repo_name, "done", paths)
         return
 
     # Send engineer to fix.
@@ -411,6 +415,83 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
     print(f"  [{repo_name}] Pushing fixes...")
     subprocess.run(["git", "push"], cwd=str(wt_path))
     print(f"  [{repo_name}] PR fixes pushed.")
+    update_repo_step(slug, repo_name, "done", paths)
+
+
+# ── Step: Fix cross-review findings ───────────────────────────────────
+
+
+def step_fix_cross_review(slug: str, repo_name: str, paths: ProjectPaths) -> None:
+    """Read cross-review findings and send the engineer to fix repo-specific issues."""
+    wt_path = paths.worktree_path(slug, repo_name)
+    cross_review_file = paths.spec_file(slug, "cross-review.md")
+    spec_file = paths.spec_file(slug, f"{repo_name}-spec.md")
+    log_file = paths.logs_dir(slug) / f"{repo_name}-xfix.log"
+    repo_info = REPO_BY_NAME.get(repo_name)
+    lang = repo_info.language if repo_info else "unknown"
+
+    if not cross_review_file.exists():
+        print(f"  [{repo_name}] No cross-review file found, skipping.")
+        return
+
+    file_args: list[str] = ["-f", str(cross_review_file)]
+    if spec_file.exists():
+        file_args += ["-f", str(spec_file)]
+
+    test_note = ""
+    if repo_info and repo_info.test_hints:
+        test_note = f" TESTING: {repo_info.test_hints}"
+
+    message = (
+        f"The cross-repository review found issues that need fixing in this "
+        f"{lang} repository ({repo_name}). The attached cross-review.md "
+        f"contains the full review. Look at the 'Summary of Findings' table "
+        f"and the 'Recommendations' section. Fix ONLY the findings that "
+        f"mention this repository ({repo_name}). Ignore findings for other "
+        f"repos. Commit your fixes in atomic commits and push."
+        f"{test_note}"
+        f" IMPORTANT: If a command times out, do NOT retry the same command. "
+        f"Run a smaller subset instead (e.g. a single test file, not the full "
+        f"suite). Use -x flag to stop on first failure. Never run integration "
+        f"tests or slow test suites without a timeout."
+    )
+
+    print(f"  [{repo_name}] Fixing cross-review findings...")
+    prompt_file = paths.logs_dir(slug) / f"{repo_name}-xfix-prompt.md"
+    _write_prompt(prompt_file, message)
+    _run_opencode(wt_path, prompt_file, file_args, log_file)
+
+    # Push the fixes.
+    print(f"  [{repo_name}] Pushing cross-review fixes...")
+    subprocess.run(["git", "push"], cwd=str(wt_path))
+    print(f"  [{repo_name}] Cross-review fixes pushed.")
+
+
+def run_cross_review_fix_pipeline(
+    slug: str,
+    repo_name: str,
+) -> None:
+    """Run the cross-review fix pipeline for a single repo.
+
+    Called from a tmux pane by the orchestrator. Sequences:
+    fix cross-review -> CI watch -> done.
+    """
+    paths = get_project_paths()
+
+    print(f"\n{'=' * 50}")
+    print(f"  [{repo_name}] Starting cross-review fix pipeline")
+    print(f"{'=' * 50}\n")
+
+    update_repo_step(slug, repo_name, "xfix", paths)
+    step_fix_cross_review(slug, repo_name, paths)
+
+    # CI watch after the fix.
+    print(f"\n  [{repo_name}] -> ci-watch (post cross-review fix)")
+    update_repo_step(slug, repo_name, "xfix-ci", paths)
+    step_ci_watch(slug, repo_name, paths)
+
+    print(f"\n  [{repo_name}] Cross-review fix pipeline complete.")
+    update_repo_step(slug, repo_name, "xfix-done", paths)
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────
@@ -463,9 +544,14 @@ def run_repo_pipeline(
 
 
 # ── CLI entry point ───────────────────────────────────────────────────
-
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print(f"Usage: {sys.argv[0]} <slug> <repo-name>", file=sys.stderr)
+    if len(sys.argv) >= 4 and sys.argv[3] == "--fix-cross-review":
+        run_cross_review_fix_pipeline(sys.argv[1], sys.argv[2])
+    elif len(sys.argv) == 3:
+        run_repo_pipeline(sys.argv[1], sys.argv[2])
+    else:
+        print(
+            f"Usage: {sys.argv[0]} <slug> <repo-name> [--fix-cross-review]",
+            file=sys.stderr,
+        )
         sys.exit(1)
-    run_repo_pipeline(sys.argv[1], sys.argv[2])

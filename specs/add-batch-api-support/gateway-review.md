@@ -1,111 +1,56 @@
-# Gateway Batch API Review
-
-## Status: NEEDS_CHANGES
-
-## Summary
-
-The implementation adds five batch endpoints under `/v1/batches` to the gateway. The overall structure is solid: Pydantic models, router registration, auth, error handling, usage logging, and tests all follow established codebase patterns. However, the `GET /v1/batches/{batch_id}/results` endpoint diverges significantly from the spec, and there are a few smaller gaps.
-
-All 340 tests pass (331 passed, 9 skipped), the OpenAPI spec is regenerated and passes `--check`, and ruff reports no lint issues.
+## Status: PASS
 
 ## Issues Found
 
-### 1. CRITICAL: `retrieve_batch_results` does not use `aretrieve_batch_results` SDK function (Spec Non-Compliance)
+No blocking issues. All previous review findings addressed in follow-up commits (232b6a8 through ed986e2).
 
-**File:** `src/gateway/api/routes/batches.py:278-318`
+### Resolved from previous review:
 
-The spec requires the results endpoint to call `aretrieve_batch_results` from `any_llm.api` and return a `BatchResult` object serialized as:
+1. **Results endpoint** — Now calls `aretrieve_batch_results` from SDK, returns `{"results": [...]}` with correct shape. `BatchNotCompleteError` caught and mapped to 409. Fixed in 7a3c17d.
+2. **Dead `db` parameter in `log_batch_usage`** — Removed. Fixed in 232b6a8.
+3. **`get_db` vs `get_db_if_needed`** — Switched to `get_db_if_needed`. Fixed in 5a19e47.
+4. **`model="batch"` sentinel** — Changed to empty string `""`. Fixed in 232b6a8.
+5. **`BackgroundTasks` parameter** — Added to `create_batch` signature. Fixed in 5a19e47 (declared but unused — see recommendations).
+6. **`Batch` import under `TYPE_CHECKING`** — Moved to runtime import. Fixed in bf9300f.
+7. **`test_create_batch_invalid_model_format` not mocked** — Now mocks `split_model_provider`. Fixed in f9ba0ca.
+8. **SDK dependency** — Pinned to local source with batch result types. Fixed in 5b12818.
+9. **OpenAPI spec** — Regenerated. Fixed in ed986e2.
 
-```json
-{
-  "results": [
-    {"custom_id": "req-1", "result": { ... }, "error": null},
-    {"custom_id": "req-2", "result": null, "error": {"code": "...", "message": "..."}}
-  ]
-}
-```
+### Minor observations (non-blocking):
 
-Instead, the implementation calls `aretrieve_batch` (the status endpoint), checks `batch.status != "completed"`, and returns `batch.model_dump()` directly. This returns the batch metadata (id, status, request_counts, etc.) rather than the actual per-request results.
+1. **`BackgroundTasks` declared but unused** — `batches.py:102` — `create_batch` accepts `background_tasks` but logging is done inline with `await`. Matches spec signature exactly but parameter serves no purpose. Cosmetic.
 
-The spec also requires handling `BatchNotCompleteError` from `any_llm.exceptions`, but neither `aretrieve_batch_results` nor `BatchNotCompleteError` are imported.
+2. **Empty string model in results usage log** — `batches.py:330` — `model=""` passed when logging results retrieval. Model info unavailable at this endpoint. Spec acknowledges this ("deferred for simplicity"). Acceptable.
 
-**Root cause:** The SDK does not yet export `aretrieve_batch_results`, `BatchNotCompleteError`, `BatchResult`, `BatchResultItem`, or `BatchResultError`. These types are not available in the installed `any_llm` package:
-- `any_llm.api` exports: `acreate_batch`, `aretrieve_batch`, `acancel_batch`, `alist_batches` (but NOT `aretrieve_batch_results`)
-- `any_llm.types.batch` exports: `Batch`, `BatchRequestCounts`, `OpenAIBatch`, `OpenAIBatchRequestCounts` (but NOT `BatchResult`, `BatchResultItem`, `BatchResultError`)
-- `any_llm.exceptions` does NOT export `BatchNotCompleteError`
-
-The implementation worked around the missing SDK functions by using `aretrieve_batch` as a fallback, but the response shape is wrong and the Pydantic response models (`BatchResultResponse`, `BatchResultItemResponse`, `BatchResultErrorResponse`) defined in the file are unused.
-
-**Impact:** The `/v1/batches/{batch_id}/results` endpoint returns batch metadata instead of actual per-request results, making it functionally equivalent to `GET /v1/batches/{batch_id}` with an added status check.
-
-### 2. MEDIUM: `log_batch_usage` omits the `db` parameter (Spec Divergence)
-
-**File:** `src/gateway/api/routes/batches.py:69-90`
-
-The spec defines `log_batch_usage` with a `db: AsyncSession` parameter:
-
-```python
-async def log_batch_usage(db: AsyncSession, log_writer: LogWriter, ...)
-```
-
-The implementation omits `db` entirely. While the current `log_writer.put()` does not require a direct `db` reference (the `LogWriter` handles persistence internally), the spec explicitly includes it for consistency with `log_usage` in `chat.py`. This is a minor divergence since the function works correctly without it.
-
-### 3. MEDIUM: Uses `get_db` instead of `get_db_if_needed` (Spec Divergence)
-
-**File:** `src/gateway/api/routes/batches.py:103, 185, 216, 247, 285`
-
-The spec calls for `Depends(get_db_if_needed)` which returns `AsyncSession | None`. The implementation uses `Depends(get_db)` which always returns `AsyncSession`. Since batch routes are only registered in standalone mode (not platform mode), this works correctly in practice. However, the spec explicitly requested `get_db_if_needed` for consistency. Using `get_db` is arguably more appropriate here since the routes are standalone-only.
-
-### 4. LOW: `retrieve_batch_results` does not log usage (Spec Non-Compliance)
-
-**File:** `src/gateway/api/routes/batches.py:278-318`
-
-The spec states: "Log usage for result retrieval." The `log_writer` dependency is injected but never used in the `retrieve_batch_results` handler. The `create_batch` handler correctly logs usage on both success and error paths.
-
-### 5. LOW: Missing integration test `test_create_batch_invalid_model_format` (Test Coverage Gap)
-
-**File:** `tests/integration/test_batches_endpoint.py`
-
-The spec lists `test_create_batch_invalid_model_format` as a required test: "No colon in model -> appropriate error." This test is not present in the integration test file. The behavior depends on how `AnyLLM.split_model_provider` handles malformed model strings, which could raise an unhandled exception resulting in a 500 instead of a clear 400/422.
-
-### 6. LOW: Deprecation warning for `HTTP_422_UNPROCESSABLE_ENTITY`
-
-**File:** `src/gateway/api/routes/batches.py:118`
-
-The test output shows a `DeprecationWarning`: `'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.` The code uses `status.HTTP_422_UNPROCESSABLE_ENTITY` which is deprecated in newer FastAPI/Starlette versions.
-
-### 7. LOW: `Batch` import from `any_llm.types.batch` is unused in type annotations
-
-**File:** `src/gateway/api/routes/batches.py:12`
-
-`Batch` is imported from `any_llm.types.batch` and used only as inline type annotations (`batch: Batch`). This is fine for runtime type hints but could be moved under `TYPE_CHECKING` following the pattern in `_helpers.py`. Minor style point.
+3. **`HTTP_422_UNPROCESSABLE_CONTENT`** — `batches.py:126` — Uses newer starlette constant vs `HTTP_422_UNPROCESSABLE_ENTITY`. Both map to 422. No functional difference.
 
 ## Recommendations
 
-1. **Regarding the results endpoint (Issue 1):** This is a hard dependency on the SDK releasing `aretrieve_batch_results` and related types. Two options:
-   - **(a)** Leave a clear `TODO` / `FIXME` comment explaining the workaround and add a tracking issue. Update the endpoint once the SDK ships the function.
-   - **(b)** If the SDK release is imminent, block this PR until the SDK is updated, then implement the endpoint per spec.
-   
-   Either way, the test `test_retrieve_batch_results` should be updated to document that it's testing the workaround behavior, not the spec-intended behavior.
+1. **Remove unused `background_tasks` parameter** from `create_batch` — simplifies signature without functional impact.
 
-2. **Add the missing `test_create_batch_invalid_model_format` test** to verify graceful handling of malformed model strings (e.g., `"gpt-4o-mini"` without a provider prefix). If this currently results in a 500, add error handling to return 400/422.
+2. **Consider background logging** — `create_batch` logs usage inline (`await log_batch_usage`). Could use `background_tasks.add_task()` to avoid blocking response, matching how `chat.py` uses background tasks for platform usage reporting. Low priority since `log_writer.put()` is fast.
 
-3. **Add usage logging to `retrieve_batch_results`** as the spec requires, even with the current workaround implementation.
+3. **Route definition order** — `GET /{batch_id}` defined before `GET ""` (list). FastAPI handles this correctly since different path structures, but parameterless route first would match conventional REST ordering. Cosmetic only.
 
-4. **Replace `HTTP_422_UNPROCESSABLE_ENTITY` with `HTTP_422_UNPROCESSABLE_CONTENT`** to silence the deprecation warning.
+## Verification Results
 
-5. **Pin `any-llm-sdk` minimum version** in `pyproject.toml` once the batch types SDK release is available: `"any-llm-sdk[all]>=<version-with-batch-support>"`.
+- **Unit tests:** 8/8 passed (Pydantic validation: valid request, empty requests, too many requests, missing model, missing custom_id, optional metadata, custom completion window)
+- **Integration tests:** 17/17 passed (auth variations, unsupported provider, empty requests, invalid model, provider error, usage logging, temp file cleanup, retrieve, missing provider, cancel, list with pagination, results, results not complete, results usage logging, platform mode exclusion)
+- **Full suite:** 333 passed, 9 skipped, 0 failures — no regressions
+- **OpenAPI spec:** `--check` passes
+- **Lint:** `ruff check` clean on all new files
 
-6. The `get_db` vs `get_db_if_needed` choice (Issue 3) is acceptable as-is since batch routes are standalone-only. No change needed unless the architecture changes.
+## Spec Compliance Checklist
 
-## What Works Well
-
-- **Router registration:** Correctly placed in standalone mode only, after `embeddings.router` and before `models.router`.
-- **Auth pattern:** Uses `Annotated[..., Depends(verify_api_key_or_master_key)]` consistently, matching the cleaner pattern from `embeddings.py`.
-- **JSONL temp file construction and cleanup:** Properly uses `tempfile.NamedTemporaryFile(delete=False)` with `os.unlink` in a `finally` block, ensuring cleanup even on SDK errors.
-- **Error handling:** Follows the established `except HTTPException: raise` / `except Exception` / 502 pattern from `chat.py`.
-- **Provider validation:** Correctly checks `SUPPORTS_BATCH` attribute with `getattr` fallback.
-- **Test coverage:** 8 unit tests and 15 integration tests cover auth, provider validation, pagination, error paths, temp file cleanup, usage logging, and platform mode exclusion.
-- **OpenAPI spec:** Regenerated and passes `--check`.
-- **Code quality:** Clean imports, proper typing, consistent naming, concise docstrings.
-- **All 340 tests pass** with no regressions.
+| Acceptance Criteria | Status |
+|---|---|
+| 1. Five batch endpoints respond correctly and in OpenAPI spec | PASS |
+| 2. POST /v1/batches constructs JSONL temp file, calls SDK, cleans up | PASS |
+| 3. All endpoints require authentication | PASS |
+| 4. GET results returns 409 when not complete | PASS |
+| 5. Provider validation rejects without SUPPORTS_BATCH | PASS |
+| 6. Provider field injected in create response | PASS |
+| 7. Usage logged for create and results retrieval | PASS |
+| 8. Existing endpoints unaffected | PASS (333 tests pass) |
+| 9. OpenAPI spec regenerated and passes --check | PASS |
+| 10. Integration tests pass with mocked SDK | PASS |

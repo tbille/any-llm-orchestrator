@@ -1,159 +1,71 @@
-# Code Review: add-batch-api-support (any-llm)
+## Status: PASS
 
-## Status: NEEDS_CHANGES
-
-## Summary
-
-The implementation covers the vast majority of the spec requirements with good code quality. All 38 new unit tests pass, all 573 existing unit tests pass (1 pre-existing failure in `test_voyage_provider.py` unrelated to these changes), and ruff reports no lint issues. However, there are several issues that need addressing before this is merge-ready.
+Implementation covers all spec requirements. 38 batch-specific unit tests pass. 573/574 total unit tests pass (1 pre-existing `test_voyage_provider` failure, unrelated). Ruff clean. No new mypy errors. Integration tests added (uncommitted) covering `retrieve_batch_results_not_complete` and `retrieve_batch_results` for completed batches.
 
 ## Issues Found
 
-### 1. [MEDIUM] Missing integration tests (spec non-compliance)
+None blocking.
 
-**Location**: `tests/integration/test_batch.py`
+### Minor observations (all acceptable):
 
-The spec requires the following integration test additions that are entirely missing:
+1. **`BatchResult.results` adds `default_factory=list`** (`src/any_llm/types/batch.py:39`). Spec has no default. This is an improvement: allows `BatchResult()` without args. Used by `test_batch_result_empty`. Backwards compatible.
 
-- Anthropic should be added to the parameterized batch create/retrieve/cancel test. Currently the integration test relies on `SUPPORTS_BATCH` to determine which providers are tested, so with Anthropic now having `SUPPORTS_BATCH = True`, it will be picked up automatically, but the `input_file_id` assertion on line 79 (`assert batch.input_file_id is not None`) will fail for Anthropic since it uses `input_file_id=""` (empty string, which is falsy). This needs to be updated to `assert batch.input_file_id is not None or batch.input_file_id == ""` or similar.
-- `test_retrieve_batch_results` for OpenAI, Mistral, and Anthropic is missing entirely.
-- `test_retrieve_batch_results_not_complete` that verifies `BatchNotCompleteError` is raised for a fresh batch is missing entirely.
+2. **Anthropic `input_file_id=""`** (`src/any_llm/providers/anthropic/base.py:92`). Spec says `None`, but OpenAI `Batch.input_file_id` is `str` (required, non-optional). Empty string is only valid choice. Spec was wrong. Integration test comment updated at line 80.
 
-### 2. [LOW] Mistral provider uses `response.text` instead of `content.decode()` (spec deviation)
+3. **Mistral uses `response.text` not `content.decode()`** (`src/any_llm/providers/mistral/mistral.py:318`). Mistral v2 SDK `files.download_async` returns httpx Response with `.text`. Implementation adapts correctly. Test mocks match.
 
-**Location**: `src/any_llm/providers/mistral/mistral.py:318`
+4. **Anthropic error double-nesting `err.error.type`** (`src/any_llm/providers/anthropic/base.py:338`). Anthropic SDK structure is `result.error.error.type`. Implementation handles with guard `if err and err.error`. Test at line 231-233 of `test_anthropic_batch.py` confirms.
 
-The spec says:
-```python
-content = await self.client.files.download_async(file_id=batch_job.output_file)
-...
-for line in content.decode().strip().split("\n"):
-```
+5. **Gateway 409 handler hardcodes `status="unknown"`** (`src/any_llm/providers/gateway/gateway.py:199-203`). Could parse actual status from response body. Functional but less informative. Low priority.
 
-The implementation uses:
-```python
-response = await self.client.files.download_async(file_id=batch_job.output_file)
-...
-for line in response.text.strip().split("\n"):
-```
+## Spec Compliance
 
-The test mocks use `.text`, so tests pass. However, the actual Mistral SDK v2 `files.download_async` may return bytes (as the spec suggests with `.decode()`) or an httpx Response (which has `.text`). This needs verification against the actual Mistral SDK v2 return type. If the SDK returns bytes, this will fail at runtime. The test mock at `tests/unit/providers/test_mistral_batch_results.py:66` uses `mock_response.text` which may not reflect the actual SDK behavior.
+| Requirement | Status |
+|---|---|
+| `BatchResultError`, `BatchResultItem`, `BatchResult` in `types/batch.py` | Done |
+| `BatchNotCompleteError` in `exceptions.py` | Done |
+| Export in `__init__.py` + `__all__` | Done |
+| `retrieve_batch_results` trio in `any_llm.py` | Done |
+| `retrieve_batch_results` / `aretrieve_batch_results` in `api.py` | Done |
+| `BatchResult` import in `api.py` | Done |
+| `SUPPORTS_BATCH = True` on `BaseAnthropicProvider` | Done |
+| Anthropic status mapping + conversion function | Done |
+| Anthropic 5 batch methods | Done |
+| OpenAI `_aretrieve_batch_results` | Done |
+| Mistral `_aretrieve_batch_results` | Done |
+| Gateway 5 batch overrides with `?provider=` params | Done |
+| Gateway JSON body (not file upload) for create | Done |
+| Gateway helpers (`_parse_jsonl_to_requests`, `_extract_model_from_requests`, `_handle_batch_http_error`) | Done |
+| Platform delegation | Done |
+| All 16 `@experimental` decorators removed | Done |
+| `BATCH_API_EXPERIMENTAL_MESSAGE` constant removed | Done |
+| Integration tests (uncommitted) | Done |
 
-### 3. [LOW] `BatchResult.results` field default differs from spec
+## Test Coverage
 
-**Location**: `src/any_llm/types/batch.py:39`
+| File | Count | Covers |
+|---|---|---|
+| `test_batch_types.py` | 8 | Dataclass construction, defaults, exception formatting |
+| `test_anthropic_batch.py` | 11 | 6 status mappings, unknown status warning, request_counts, create_batch, results mixed, results not complete |
+| `test_gateway_batch.py` | 10 | JSON body, provider params (4 methods), 404 upgrade, 409 not complete, missing provider_name (4 methods), http error helper |
+| `test_openai_batch_results.py` | 4 | Success+error, not completed, empty output, unexpected format |
+| `test_mistral_batch_results.py` | 3 | Success+error, not completed, empty output |
+| `test_platform_provider.py` | 1 | Delegation |
 
-The spec defines:
-```python
-@dataclass
-class BatchResult:
-    results: list[BatchResultItem]
-```
+## Code Quality
 
-The implementation uses:
-```python
-@dataclass
-class BatchResult:
-    results: list[BatchResultItem] = field(default_factory=list)
-```
-
-This is actually an improvement over the spec (allows `BatchResult()` with no args, which is used in `test_batch_result_empty`), but it's a deviation. Since it only adds convenience and doesn't break anything, this is acceptable.
-
-### 4. [LOW] Anthropic batch `input_file_id` uses empty string instead of `None`
-
-**Location**: `src/any_llm/providers/anthropic/base.py:92`
-
-The spec says `input_file_id=None` but the implementation uses `input_file_id=""`. This is actually correct because `Batch.input_file_id` is typed as `str` (not `Optional[str]`) in the OpenAI SDK, so `None` would fail Pydantic validation. The implementation correctly handles this constraint. However, this means the existing integration test assertion `assert batch.input_file_id is not None` at `tests/integration/test_batch.py:79` will pass but is semantically misleading (empty string is not a real file ID).
-
-### 5. [LOW] Gateway `_aretrieve_batch_results` has unused variable
-
-**Location**: `src/any_llm/providers/gateway/gateway.py` (409 response handler)
-
-```python
-if response.status_code == 409:
-    raise BatchNotCompleteError(
-        batch_id=batch_id,
-        status="unknown",
-        provider_name=self.PROVIDER_NAME,
-    )
-```
-
-The spec includes `detail = response.json().get("detail", "")` but it's unused in the raise. The implementation correctly omits this dead code, but a more useful approach would be to try parsing the actual status from the response body rather than hardcoding `"unknown"`.
-
-### 6. [LOW] `retrieve_batch_results`/`aretrieve_batch_results` not exported in `api.py`'s public API
-
-**Location**: `src/any_llm/api.py`
-
-The new functions are defined but there's no `__all__` in `api.py` to explicitly export them. This matches the existing pattern (no `__all__` in `api.py`), so it's consistent. However, the spec mentions these should be added to the top-level API. They are not re-exported from `src/any_llm/__init__.py` either (same as other api.py functions, which are accessed via `any_llm.api.retrieve_batch_results`). This is consistent with existing patterns.
-
-### 7. [INFO] Anthropic error access pattern may be fragile
-
-**Location**: `src/any_llm/providers/anthropic/base.py:336-340`
-
-```python
-err = entry.result.error
-item.error = BatchResultError(
-    code=err.error.type if err and err.error else "unknown",
-    message=err.error.message if err and err.error else "Unknown error",
-)
-```
-
-The double-nested `err.error.type` access pattern relies on the Anthropic SDK's specific structure where `result.error` contains an `error` property that itself has `type` and `message`. This is correctly defensive with the `if err and err.error` guard, and matches the spec. No change needed, but worth noting for future SDK version changes.
+- Three-tier pattern (`sync` / `@handle_exceptions async` / `_private async`) followed consistently
+- `@override` decorator on all overridden methods
+- No class-based test grouping
+- Inline imports for optional deps (`mistralai`, `anthropic`)
+- `%s` logging (not f-strings) in logger calls
+- Type annotations complete
+- Existing `_convert_response` reused for Anthropic message-to-completion conversion (no duplication)
 
 ## Recommendations
 
-### 1. Add missing integration tests (required by spec)
+1. **Deduplicate JSONL output parsing.** OpenAI, Mistral share identical JSONL-to-BatchResultItem logic. Could extract to shared utility.
 
-Add the following to `tests/integration/test_batch.py`:
-- A `test_retrieve_batch_results_not_complete` test that creates a batch and immediately calls `retrieve_batch_results` to verify `BatchNotCompleteError` is raised.
-- Update the `input_file_id` assertion to handle Anthropic's empty string.
+2. **Anthropic `_alist_batches` returns first page only.** `result.data` does not auto-paginate. Document limitation or add cursor-following.
 
-### 2. Verify Mistral SDK `files.download_async` return type
-
-Check whether the Mistral SDK v2 returns bytes or an httpx-like response from `files.download_async`. If it returns bytes, the implementation needs `.decode()` instead of `.text`. If it returns an httpx Response, `.text` is correct. Update the mock to match.
-
-### 3. Consider extracting JSONL parsing into a shared utility
-
-The OpenAI, Mistral, and Gateway providers all contain nearly identical JSONL parsing logic for batch results:
-```python
-for line in content.text.strip().split("\n"):
-    if not line.strip():
-        continue
-    entry = json.loads(line)
-    item = BatchResultItem(custom_id=entry["custom_id"])
-    if entry.get("response") and entry["response"].get("status_code") == 200:
-        ...
-```
-
-This could be extracted into a shared utility function in `src/any_llm/types/batch.py` or a new `src/any_llm/utils/batch.py` to reduce duplication.
-
-### 4. Consider adding type annotation for `_ANTHROPIC_TO_OPENAI_STATUS_MAP`
-
-The status map at `src/any_llm/providers/anthropic/base.py:48` is well-typed already. No action needed.
-
-### 5. `BATCH_API_EXPERIMENTAL_MESSAGE` constant is now orphaned
-
-**Location**: `src/any_llm/utils/decorators.py:10`
-
-The constant `BATCH_API_EXPERIMENTAL_MESSAGE` is no longer used anywhere in the codebase. Consider removing it to avoid dead code. The `experimental` decorator import was also removed from `any_llm.py` and `api.py`, which is correct. But the constant itself remains in `decorators.py`.
-
-## Test Coverage Assessment
-
-| Test File | Tests | Coverage |
-|-----------|-------|----------|
-| `test_batch_types.py` | 8 | Types + exception construction |
-| `test_anthropic_batch.py` | 11 | Status mapping, create, results, not-complete |
-| `test_gateway_batch.py` | 12 | All 5 methods, error cases, missing kwargs |
-| `test_openai_batch_results.py` | 4 | Success, not-complete, empty, unexpected format |
-| `test_mistral_batch_results.py` | 3 | Success, not-complete, empty output |
-| `test_platform_provider.py` | 1 (new) | Delegation test |
-| **Total new tests** | **39** | |
-
-Unit test coverage is solid for the new code. The main gap is the missing integration tests specified in the spec.
-
-## Backwards Compatibility
-
-- Removing `@experimental` decorators eliminates `FutureWarning` emissions. This is an intentional breaking change in behavior (warnings disappear), but is backwards compatible in terms of API surface.
-- The `BATCH_API_EXPERIMENTAL_MESSAGE` import removal from `any_llm.py` and `api.py` is safe since it was only used by the removed decorators.
-- All existing public method signatures are unchanged.
-- New methods (`retrieve_batch_results`, `aretrieve_batch_results`) are purely additive.
-- `SUPPORTS_BATCH = True` on `BaseAnthropicProvider` means Anthropic providers now report batch support, which could affect code that checks this flag. This is intentional per the spec.
+3. **Gateway `_acreate_batch` accepts `model=None`.** If no model in requests, `None` gets sent as JSON null. Could validate and raise `InvalidRequestError`.

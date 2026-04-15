@@ -239,3 +239,110 @@ def run_cross_repo_review(
     )
 
     print("  Cross-repo review complete.\n")
+
+
+# ── Cross-review fix launcher ────────────────────────────────────────
+
+
+def _parse_affected_repos_from_cross_review(
+    cross_review_file: Path,
+    candidate_repos: list[str],
+) -> list[str]:
+    """Read cross-review.md and return repos that have actionable findings.
+
+    Looks at the Summary of Findings table for repo names mentioned in the
+    'Repos' column. Only returns repos that are in ``candidate_repos``.
+    Skips findings marked as 'Informational'.
+    """
+    if not cross_review_file.exists():
+        return []
+
+    content = cross_review_file.read_text(encoding="utf-8")
+    affected: set[str] = set()
+
+    # Look for the summary table rows: | # | Severity | Finding | Repos |
+    in_summary = False
+    for line in content.splitlines():
+        if "Summary of Findings" in line:
+            in_summary = True
+            continue
+        if in_summary and line.strip().startswith("|"):
+            parts = [p.strip() for p in line.split("|")]
+            # Skip header/separator rows.
+            if len(parts) < 5 or parts[1] in ("#", "---", ""):
+                continue
+            severity = parts[2]
+            repos_col = parts[4]
+            # Skip Informational findings.
+            if severity.lower() == "informational":
+                continue
+            # Match repo names in the Repos column.
+            for repo in candidate_repos:
+                if repo in repos_col:
+                    affected.add(repo)
+
+    return [r for r in candidate_repos if r in affected]
+
+
+def run_cross_review_fixes(
+    slug: str,
+    repo_names: list[str],
+    paths: ProjectPaths,
+) -> list[str]:
+    """Launch one tmux pane per affected repo to fix cross-review findings.
+
+    Returns the list of repos that had findings to fix.
+    """
+    cross_review_file = paths.spec_file(slug, "cross-review.md")
+
+    if not cross_review_file.exists():
+        print("  [skip] No cross-review file found.")
+        return []
+
+    # Check if the review even has actionable findings.
+    content = cross_review_file.read_text(encoding="utf-8").upper()
+    if "PASS" in content and "FINDINGS" not in content:
+        print("  [skip] Cross-review passed with no findings.")
+        return []
+
+    affected = _parse_affected_repos_from_cross_review(cross_review_file, repo_names)
+    if not affected:
+        print("  [skip] No actionable findings for the candidate repos.")
+        return []
+
+    session_name = f"xfix-{slug}"
+
+    if _tmux_session_exists(session_name):
+        print(f"  [info] tmux session {session_name!r} already exists, attaching.")
+        _tmux_attach(session_name)
+        _tmux_wait_for_all_panes(session_name)
+        _tmux_kill_session(session_name)
+        return affected
+
+    print("\n── Cross-Review Fix (per-repo pipelines) ───────────")
+    print(f"  Session: {session_name}")
+    print(f"  Repos:   {', '.join(affected)}")
+    print("  Each repo: fix findings -> push -> CI watch")
+    print("────────────────────────────────────────────────────\n")
+
+    paths.logs_dir(slug).mkdir(parents=True, exist_ok=True)
+
+    pane_commands: list[tuple[str, str]] = []
+    for name in affected:
+        cmd = (
+            f"uv run python lib/repo_runner.py"
+            f" {shlex.quote(slug)} {shlex.quote(name)} --fix-cross-review"
+        )
+        pane_commands.append((cmd, str(paths.root)))
+
+    _tmux_launch_panes(session_name, pane_commands)
+
+    print("  Attaching to tmux session. Use Ctrl-B D to detach.\n")
+    _tmux_attach(session_name)
+
+    print("  Waiting for all cross-review fix pipelines to finish...")
+    _tmux_wait_for_all_panes(session_name)
+    _tmux_kill_session(session_name)
+    print("  All cross-review fix pipelines done.\n")
+
+    return affected

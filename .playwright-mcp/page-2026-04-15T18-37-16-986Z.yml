@@ -1,0 +1,121 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - heading "any-llm-world" [level=1] [ref=e3]
+    - generic [ref=e4]:
+      - generic [ref=e5]: Notifications on
+      - button "Hide logs" [ref=e6] [cursor=pointer]
+      - text: "Auto-refresh: 5s · 8:37:13 PM"
+  - generic [ref=e117]:
+    - generic [ref=e118]:
+      - generic [ref=e119]: add-batch-api-support
+      - generic [ref=e120]: feature
+    - generic [ref=e121]:
+      - generic [ref=e122]: ✓ Intake
+      - generic [ref=e123]: ✓ Workspace
+      - generic [ref=e124]: ✓ PM
+      - generic [ref=e125]: ✓ Debate
+      - generic [ref=e126]: ✓ Designer
+      - generic [ref=e127]: ✓ Architect
+      - generic [ref=e128]: ✓ Build 5/5
+      - generic [ref=e129]: ✓ X-Review
+    - table [ref=e130]:
+      - rowgroup [ref=e131]:
+        - row "Repo Status PR CI" [ref=e132]:
+          - columnheader "Repo" [ref=e133]
+          - columnheader "Status" [ref=e134]
+          - columnheader "PR" [ref=e135]
+          - columnheader "CI" [ref=e136]
+        - row "any-llm 59.2 KB ✓ ENG ✓ REV ✓ PR ✓ CI ▸ 4 steps 1041 pass" [ref=e137]:
+          - cell "any-llm 59.2 KB" [ref=e138]:
+            - strong [ref=e139]: any-llm
+            - text: 59.2 KB
+          - cell "✓ ENG ✓ REV ✓ PR ✓ CI ▸ 4 steps" [ref=e140]:
+            - generic [ref=e141]:
+              - generic [ref=e142]: ✓ ENG
+              - generic [ref=e143]: ✓ REV
+              - generic [ref=e144]: ✓ PR
+              - generic [ref=e145]: ✓ CI
+              - generic [ref=e146] [cursor=pointer]: ▸ 4 steps
+          - cell "1041" [ref=e147]:
+            - link "1041" [ref=e148] [cursor=pointer]:
+              - /url: https://github.com/mozilla-ai/any-llm/pull/1041
+          - cell "pass" [ref=e149]: pass
+        - 'row "- **`864b2ae`** - Lint/type error fixes for the batch implementation - **`e5c7ab9`** - Remove unused `BATCH_API_EXPERIMENTAL_MESSAGE` constant, add integration tests Files changed across 19 files: new types (`BatchResult`, `BatchResultItem`, `BatchResultError`), new exception (`BatchNotCompleteError`), provider implementations (OpenAI, Mistral, Anthropic, Gateway, Platform), and comprehensive unit + integration tests." [ref=e151]':
+          - 'cell "- **`864b2ae`** - Lint/type error fixes for the batch implementation - **`e5c7ab9`** - Remove unused `BATCH_API_EXPERIMENTAL_MESSAGE` constant, add integration tests Files changed across 19 files: new types (`BatchResult`, `BatchResultItem`, `BatchResultError`), new exception (`BatchNotCompleteError`), provider implementations (OpenAI, Mistral, Anthropic, Gateway, Platform), and comprehensive unit + integration tests." [ref=e152]':
+            - generic [ref=e153]: "- **`864b2ae`** - Lint/type error fixes for the batch implementation - **`e5c7ab9`** - Remove unused `BATCH_API_EXPERIMENTAL_MESSAGE` constant, add integration tests Files changed across 19 files: new types (`BatchResult`, `BatchResultItem`, `BatchResultError`), new exception (`BatchNotCompleteError`), provider implementations (OpenAI, Mistral, Anthropic, Gateway, Platform), and comprehensive unit + integration tests."
+        - row "gateway 86.5 KB ✓ ENG ✓ REV ✓ PR ✓ CI ▸ 8 steps (fix loop) 46 pass" [ref=e154]:
+          - cell "gateway 86.5 KB" [ref=e155]:
+            - strong [ref=e156]: gateway
+            - text: 86.5 KB
+          - cell "✓ ENG ✓ REV ✓ PR ✓ CI ▸ 8 steps (fix loop)" [ref=e157]:
+            - generic [ref=e158]:
+              - generic [ref=e159]: ✓ ENG
+              - generic [ref=e160]: ✓ REV
+              - generic [ref=e161]: ✓ PR
+              - generic [ref=e162]: ✓ CI
+              - generic [ref=e163] [cursor=pointer]: ▸ 8 steps (fix loop)
+          - cell "46" [ref=e164]:
+            - link "46" [ref=e165] [cursor=pointer]:
+              - /url: https://github.com/mozilla-ai/gateway/pull/46
+          - cell "pass" [ref=e166]: pass
+        - 'row "- ruff: pass - tests: 333 passed, 9 skipped - Pushed to `origin/add-batch-api-support`" [ref=e168]':
+          - 'cell "- ruff: pass - tests: 333 passed, 9 skipped - Pushed to `origin/add-batch-api-support`" [ref=e169]':
+            - generic [ref=e170]: "- ruff: pass - tests: 333 passed, 9 skipped - Pushed to `origin/add-batch-api-support`"
+        - row "any-llm-rust 57.8 KB ✓ ENG ✓ REV ✓ PR ✓ CI ▸ 4 steps 17 pass" [ref=e171]:
+          - cell "any-llm-rust 57.8 KB" [ref=e172]:
+            - strong [ref=e173]: any-llm-rust
+            - text: 57.8 KB
+          - cell "✓ ENG ✓ REV ✓ PR ✓ CI ▸ 4 steps" [ref=e174]:
+            - generic [ref=e175]:
+              - generic [ref=e176]: ✓ ENG
+              - generic [ref=e177]: ✓ REV
+              - generic [ref=e178]: ✓ PR
+              - generic [ref=e179]: ✓ CI
+              - generic [ref=e180] [cursor=pointer]: ▸ 4 steps
+          - cell "17" [ref=e181]:
+            - link "17" [ref=e182] [cursor=pointer]:
+              - /url: https://github.com/mozilla-ai/any-llm-rust/pull/17
+          - cell "pass" [ref=e183]: pass
+        - row "- 7 files changed, 795 insertions across types, gateway methods, error handling, and tests - All 37 unit tests pass, clippy clean, fmt clean - Uncommitted AGENTS.md change (spec injection) intentionally left out of PR" [ref=e185]:
+          - cell "- 7 files changed, 795 insertions across types, gateway methods, error handling, and tests - All 37 unit tests pass, clippy clean, fmt clean - Uncommitted AGENTS.md change (spec injection) intentionally left out of PR" [ref=e186]:
+            - generic [ref=e187]: "- 7 files changed, 795 insertions across types, gateway methods, error handling, and tests - All 37 unit tests pass, clippy clean, fmt clean - Uncommitted AGENTS.md change (spec injection) intentionally left out of PR"
+        - row "any-llm-go 58.6 KB ✓ ENG ✓ REV ✓ PR ✓ CI ▸ 4 steps 89 none" [ref=e188]:
+          - cell "any-llm-go 58.6 KB" [ref=e189]:
+            - strong [ref=e190]: any-llm-go
+            - text: 58.6 KB
+          - cell "✓ ENG ✓ REV ✓ PR ✓ CI ▸ 4 steps" [ref=e191]:
+            - generic [ref=e192]:
+              - generic [ref=e193]: ✓ ENG
+              - generic [ref=e194]: ✓ REV
+              - generic [ref=e195]: ✓ PR
+              - generic [ref=e196]: ✓ CI
+              - generic [ref=e197] [cursor=pointer]: ▸ 4 steps
+          - cell "89" [ref=e198]:
+            - link "89" [ref=e199] [cursor=pointer]:
+              - /url: https://github.com/mozilla-ai/any-llm-go/pull/89
+          - cell "none" [ref=e200]: none
+        - 'row "https://github.com/mozilla-ai/any-llm-go/pull/89 PR created: https://github.com/mozilla-ai/any-llm-go/pull/89 (Warning about 1 uncommitted change is `AGENTS.md` — orchestrator-generated file, intentionally not committed.)" [ref=e202]':
+          - 'cell "https://github.com/mozilla-ai/any-llm-go/pull/89 PR created: https://github.com/mozilla-ai/any-llm-go/pull/89 (Warning about 1 uncommitted change is `AGENTS.md` — orchestrator-generated file, intentionally not committed.)" [ref=e203]':
+            - generic [ref=e204]: "https://github.com/mozilla-ai/any-llm-go/pull/89 PR created: https://github.com/mozilla-ai/any-llm-go/pull/89 (Warning about 1 uncommitted change is `AGENTS.md` — orchestrator-generated file, intentionally not committed.)"
+        - row "any-llm-ts 11.9 KB ✓ ENG ✓ REV ✓ PR ✓ CI ▸ 5 steps (fix loop) 1 pass" [ref=e205]:
+          - cell "any-llm-ts 11.9 KB" [ref=e206]:
+            - strong [ref=e207]: any-llm-ts
+            - text: 11.9 KB
+          - cell "✓ ENG ✓ REV ✓ PR ✓ CI ▸ 5 steps (fix loop)" [ref=e208]:
+            - generic [ref=e209]:
+              - generic [ref=e210]: ✓ ENG
+              - generic [ref=e211]: ✓ REV
+              - generic [ref=e212]: ✓ PR
+              - generic [ref=e213]: ✓ CI
+              - generic [ref=e214] [cursor=pointer]: ▸ 5 steps (fix loop)
+          - cell "1" [ref=e215]:
+            - link "1" [ref=e216] [cursor=pointer]:
+              - /url: https://github.com/mozilla-ai/any-llm-ts/pull/1
+          - cell "pass" [ref=e217]: pass
+        - 'row "**Fix:** Dropped Node 18 from CI test matrix, updated `engines` field to `>=20` in `package.json`. Two files changed: - `.github/workflows/ci.yml:45` — removed `\"18\"` from matrix - `package.json:44` — `>=18` → `>=20`" [ref=e219]':
+          - 'cell "**Fix:** Dropped Node 18 from CI test matrix, updated `engines` field to `>=20` in `package.json`. Two files changed: - `.github/workflows/ci.yml:45` — removed `\"18\"` from matrix - `package.json:44` — `>=18` → `>=20`" [ref=e220]':
+            - generic [ref=e221]: "**Fix:** Dropped Node 18 from CI test matrix, updated `engines` field to `>=20` in `package.json`. Two files changed: - `.github/workflows/ci.yml:45` — removed `\"18\"` from matrix - `package.json:44` — `>=18` → `>=20`"
+    - generic [ref=e222]:
+      - generic [ref=e223]: $89.69
+      - generic [ref=e224]: 508.5K output tokens · 56 sessions · 1125 messages
+      - generic [ref=e225]: "any-llm: $34.88 · gateway: $20.95 · any-llm-go: $11.56 · any-llm-ts: $8.37 · any-llm-rust: $6.81"

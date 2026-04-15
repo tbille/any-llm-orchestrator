@@ -1,0 +1,118 @@
+[    2124ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[    2124ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[   61554ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[   61555ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[   61555ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[   61555ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[   61555ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[   61555ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[   95268ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23)
+    at http://localhost:8080/:406:1 @ http://localhost:8080/:401
+[   95268ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[   95268ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[   95268ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[   95268ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[   95268ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[   95268ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[   96563ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[   96563ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  101562ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  101562ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  106561ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  106561ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  111561ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  111561ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  116561ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  116561ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  121561ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  121561ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  126561ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  126561ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  131562ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  131562ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  136561ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  136561ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  141561ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  141561ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  146562ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  146562ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  151561ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  151561ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  156562ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  156562ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  161561ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  161561ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  166562ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  166562ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  171561ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  171561ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  176561ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  176561ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  181562ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  181562ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  186561ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  186561ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  191561ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  191561ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  196561ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  196561ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  201561ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  201561ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  206562ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  206562ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  211562ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  211562ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  216562ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  216562ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  221561ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  221562ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  226562ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  226562ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  231562ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  231562ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401
+[  236562ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8080/api/status:0
+[  236562ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:393:23) @ http://localhost:8080/:401

@@ -1,0 +1,145 @@
+[   21711ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:8080/favicon.ico:0
+[   71161ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[   71162ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[   76121ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[   76121ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[   81121ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[   81121ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[   86118ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[   86118ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[   91121ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[   91121ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[   96115ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[   96115ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  103895ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  103895ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  111118ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  111118ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  111675ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  111675ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  119538ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  119539ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  126122ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  126122ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  127320ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  127320ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  135123ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  135123ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  141118ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  141118ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  142905ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  142905ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  150754ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  150754ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  150940ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  150940ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  156118ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  156118ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  176118ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  176118ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  186122ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  186122ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  196117ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  196118ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  206133ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  206133ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  213983ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  213983ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  226122ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  226122ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  236120ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  236120ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  246116ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  246116ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  256114ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  256114ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  263896ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  263896ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  271747ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  271747ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  279597ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  279597ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  296156ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  296156ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  306120ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  306120ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  313900ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  313900ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  321682ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  321682ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  331120ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  331120ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  338899ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  338899ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  346682ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  346682ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  354462ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  354462ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  361117ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  361117ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  362242ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  362243ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  376143ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  376143ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  391168ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ http://localhost:8080/api/status:0
+[  391168ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  393360ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  393360ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  393360ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  393361ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  393361ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  393361ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  393361ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  393361ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395
+[  393361ms] [ERROR] Refresh failed: TypeError: Failed to fetch
+    at refresh (http://localhost:8080/:387:23) @ http://localhost:8080/:395

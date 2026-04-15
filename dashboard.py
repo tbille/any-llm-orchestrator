@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 
 from lib.config import get_project_paths
 from lib.costs import get_feature_costs
@@ -21,14 +24,70 @@ from lib.status import (
     get_log_tails,
     get_pr_info_for_feature,
     load_all_statuses,
+    load_status,
 )
+
+
+# ── Background job tracking ──────────────────────────────────────────
+
+# Tracks running fix-pr jobs: slug -> {"status": "running"|"done"|"failed", "error": "..."}
+_jobs_lock = threading.Lock()
+_jobs: dict[str, dict] = {}
+
+
+def _run_fix_prs_background(slug: str, repos: list[str]) -> None:
+    """Run step_fix_pr for all repos in a background thread."""
+    from lib.costs import save_feature_costs
+    from lib.repo_runner import step_fix_pr
+
+    paths = get_project_paths()
+    try:
+        for name in repos:
+            wt_path = paths.worktree_path(slug, name)
+            if not wt_path.exists():
+                print(f"  [fix-prs] [{name}] No worktree found, skipping.")
+                continue
+            step_fix_pr(slug, name, paths)
+        with _jobs_lock:
+            _jobs[slug] = {"status": "done"}
+    except Exception as exc:
+        print(f"  [fix-prs] Error fixing PRs for {slug}: {exc}")
+        with _jobs_lock:
+            _jobs[slug] = {"status": "failed", "error": str(exc)}
+    finally:
+        # Invalidate cache so the next poll picks up new status.
+        _invalidate_cache()
+
+
+def _invalidate_cache() -> None:
+    """Reset the API cache so the next poll fetches fresh data."""
+    global _cache, _cache_ts
+    with _cache_lock:
+        _cache = {}
+        _cache_ts = 0.0
 
 
 # ── API ───────────────────────────────────────────────────────────────
 
 
+_cache_lock = threading.Lock()
+_cache: dict = {}
+_cache_ts: float = 0.0
+_CACHE_TTL = 30.0  # seconds – avoids hammering gh on every 5s poll
+
+
 def _build_api_response() -> dict:
-    """Collect all data the dashboard needs in a single JSON payload."""
+    """Collect all data the dashboard needs in a single JSON payload.
+
+    Results are cached for :data:`_CACHE_TTL` seconds so that the expensive
+    ``gh`` queries aren't repeated on every poll cycle.
+    """
+    global _cache, _cache_ts
+
+    with _cache_lock:
+        if _cache and (time.monotonic() - _cache_ts) < _CACHE_TTL:
+            return _cache
+
     paths = get_project_paths()
     features = load_all_statuses(paths)
     tmux = get_live_tmux_sessions()
@@ -57,12 +116,23 @@ def _build_api_response() -> dict:
         # Cost data from the opencode DB.
         feat["costs"] = get_feature_costs(slug, paths) or {}
 
-    return {
+    # Snapshot current job statuses for the frontend.
+    with _jobs_lock:
+        jobs_snapshot = dict(_jobs)
+
+    result = {
         "features": features,
         "phase_labels": PHASE_LABELS,
         "phases_by_type": {k: list(v) for k, v in PHASES_BY_TYPE.items()},
         "all_phases": list(ALL_PHASES),
+        "fix_pr_jobs": jobs_snapshot,
     }
+
+    with _cache_lock:
+        _cache = result
+        _cache_ts = time.monotonic()
+
+    return result
 
 
 # ── HTML ──────────────────────────────────────────────────────────────
@@ -181,11 +251,24 @@ DASHBOARD_HTML = """\
   .notif-banner:hover { background: rgba(210,153,34,0.25); }
   .notif-ok { background: rgba(63,185,80,0.1); color: var(--green); border-color: rgba(63,185,80,0.2); cursor: default; }
 
-  /* Tmux badges */
-  .tmux-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
-  .tmux-badge { font-size: 11px; padding: 2px 8px; border-radius: 4px;
-                background: rgba(188,140,255,0.15); color: var(--purple);
-                font-family: monospace; }
+   /* Tmux badges */
+   .tmux-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+   .tmux-badge { font-size: 11px; padding: 2px 8px; border-radius: 4px;
+                 background: rgba(188,140,255,0.15); color: var(--purple);
+                 font-family: monospace; }
+
+   /* Action buttons */
+   .action-btn { font-size: 11px; padding: 3px 10px; border-radius: 4px; cursor: pointer;
+                 background: rgba(88,166,255,0.12); color: var(--accent); border: 1px solid rgba(88,166,255,0.3);
+                 font-weight: 500; margin-left: 8px; transition: background 0.15s; }
+   .action-btn:hover { background: rgba(88,166,255,0.25); }
+   .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+   .action-btn.btn-running { background: rgba(88,166,255,0.15); color: var(--blue);
+                              animation: pulse 2s ease-in-out infinite; }
+   .action-btn.btn-done { background: rgba(63,185,80,0.12); color: var(--green);
+                           border-color: rgba(63,185,80,0.3); }
+   .action-btn.btn-failed { background: rgba(248,81,73,0.12); color: var(--red);
+                              border-color: rgba(248,81,73,0.3); }
 </style>
 </head>
 <body>
@@ -256,6 +339,29 @@ function updateNotifStatus() {
 }
 updateNotifStatus();
 
+// ── Fix PRs action ───────────────────────────────────
+
+async function fixPRs(slug) {
+  const btn = document.getElementById("fix-pr-btn-" + slug);
+  if (btn) { btn.disabled = true; btn.textContent = "Starting..."; }
+  try {
+    const res = await fetch("/api/fix-prs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slug: slug }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert("Fix PRs failed: " + (data.error || "Unknown error"));
+      if (btn) { btn.disabled = false; btn.textContent = "Fix PRs"; }
+    }
+    // On success the button state will be updated by the next refresh cycle.
+  } catch (e) {
+    alert("Fix PRs request failed: " + e);
+    if (btn) { btn.disabled = false; btn.textContent = "Fix PRs"; }
+  }
+}
+
 // ── Log toggle ───────────────────────────────────────
 let logsVisible = localStorage.getItem("logsVisible") !== "false";
 
@@ -272,7 +378,8 @@ function updateLogToggle() {
 }
 
 function render(data) {
-  const { features, phase_labels, phases_by_type, all_phases } = data;
+  const { features, phase_labels, phases_by_type, all_phases, fix_pr_jobs } = data;
+  const jobs = fix_pr_jobs || {};
   const app = document.getElementById("app");
 
   if (!features.length) {
@@ -324,6 +431,8 @@ function render(data) {
     function stepIndex(stepName) {
       if (!stepName) return -1;
       if (stepName === "done") return BUILD_STEPS.length;
+      // "fix-pr" is a post-build action; treat it like a running state after CI.
+      if (stepName.startsWith("fix-pr")) return BUILD_STEPS.length - 1;
       // Match partial names: "review-1" -> "review", "engineer-fix-1" -> "engineer", "ci-fix" -> "ci-watch"
       for (let i = 0; i < BUILD_STEPS.length; i++) {
         if (stepName.startsWith(BUILD_STEPS[i]) || stepName.startsWith("ci-fix")) {
@@ -381,23 +490,29 @@ function render(data) {
 
         const progress = repoProgress[r] || {};
         const currentStep = progress.step || "";
-        const currentIdx = stepIndex(currentStep);
         const history = progress.history || [];
+
+        // Reconcile: if live CI says "pass" but status.json still shows
+        // ci-watch or ci-fix as the current step, treat the repo as done
+        // so the mini-pipeline doesn't contradict the CI column.
+        const liveCI = (prInfo[r] || {}).ci;
+        const effectiveStep = (liveCI === "pass" && currentStep.startsWith("ci")) ? "done" : currentStep;
+        const effectiveIdx = stepIndex(effectiveStep);
 
         // Build mini step indicators: [ENG] [REV] [PR] [CI]
         const stepsHtml = BUILD_STEPS.map((s, i) => {
           let cls = "step-pending";
           let icon = "";
-          if (currentStep === "done" || i < currentIdx) {
+          if (effectiveStep === "done" || i < effectiveIdx) {
             cls = "step-done"; icon = "\u2713 ";
-          } else if (i === currentIdx) {
+          } else if (i === effectiveIdx) {
             cls = "step-running"; icon = "\u21bb ";
           }
           return '<span class="step ' + cls + '">' + icon + STEP_LABELS[s] + "</span>";
         }).join("");
 
-        // Elapsed time on current step.
-        const elapsed = (currentStep && currentStep !== "done")
+        // Elapsed time on current step (hidden when reconciled to done).
+        const elapsed = (effectiveStep && effectiveStep !== "done")
           ? '<span class="repo-elapsed">' + fmtElapsed(progress.started_at) + '</span>'
           : '';
 
@@ -439,10 +554,29 @@ function render(data) {
         '</div>';
     }
 
+    // Fix PRs button: show when build phase is running or done.
+    const buildPhase = (f.phases && f.phases.build) || {};
+    const showFixBtn = buildPhase.status === "running" || buildPhase.status === "done";
+    const job = jobs[f.slug] || {};
+    let fixBtnHtml = "";
+    if (showFixBtn) {
+      const btnId = "fix-pr-btn-" + f.slug;
+      if (job.status === "running") {
+        fixBtnHtml = '<button id="' + btnId + '" class="action-btn btn-running" disabled>Fixing PRs\u2026</button>';
+      } else if (job.status === "done") {
+        fixBtnHtml = '<button id="' + btnId + '" class="action-btn btn-done" onclick="fixPRs(\'' + f.slug + '\')">Fix PRs \u2713</button>';
+      } else if (job.status === "failed") {
+        fixBtnHtml = '<button id="' + btnId + '" class="action-btn btn-failed" onclick="fixPRs(\'' + f.slug + '\')">Fix PRs (retry)</button>';
+      } else {
+        fixBtnHtml = '<button id="' + btnId + '" class="action-btn" onclick="fixPRs(\'' + f.slug + '\')">Fix PRs</button>';
+      }
+    }
+
     return '<div class="card">' +
       '<div class="card-header">' +
         '<span class="card-title">' + f.slug + '</span>' +
         '<span class="card-type ' + typeClass + '">' + f.triage_type + '</span>' +
+        fixBtnHtml +
       '</div>' +
       '<div class="phases">' + phaseBar + '</div>' +
       (repoRows ? '<table class="repos"><tr><th>Repo</th><th>Status</th><th>PR</th><th>CI</th></tr>' + repoRows + '</table>' : '') +
@@ -487,9 +621,73 @@ class DashboardHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path == "/api/fix-prs":
+            self._handle_fix_prs()
+        else:
+            self.send_error(404)
+
+    def _handle_fix_prs(self) -> None:
+        """Trigger fix-pr for all repos of a feature in a background thread."""
+        import json as _json
+
+        # Read request body.
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length else b""
+        try:
+            payload = _json.loads(body) if body else {}
+        except _json.JSONDecodeError:
+            self._json_response_with_status(400, {"error": "Invalid JSON"})
+            return
+
+        slug = payload.get("slug", "")
+        if not slug:
+            self._json_response_with_status(400, {"error": "Missing 'slug' field"})
+            return
+
+        # Check if already running.
+        with _jobs_lock:
+            existing = _jobs.get(slug, {})
+            if existing.get("status") == "running":
+                self._json_response_with_status(
+                    409, {"error": "Fix PRs already running for this feature"}
+                )
+                return
+
+        # Load feature data to get the repo list.
+        paths = get_project_paths()
+        status = load_status(slug, paths)
+        if status is None:
+            self._json_response_with_status(
+                404, {"error": f"Feature '{slug}' not found"}
+            )
+            return
+
+        repos = status.get("repos", [])
+        if not repos:
+            self._json_response_with_status(400, {"error": "No repos for this feature"})
+            return
+
+        # Mark job as running and launch background thread.
+        with _jobs_lock:
+            _jobs[slug] = {"status": "running"}
+
+        _invalidate_cache()
+        t = threading.Thread(
+            target=_run_fix_prs_background, args=(slug, repos), daemon=True
+        )
+        t.start()
+
+        self._json_response_with_status(
+            202, {"status": "started", "slug": slug, "repos": repos}
+        )
+
     def _json_response(self, data: dict) -> None:
+        self._json_response_with_status(200, data)
+
+    def _json_response_with_status(self, status_code: int, data: dict) -> None:
         body = json.dumps(data).encode()
-        self.send_response(200)
+        self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -508,6 +706,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         pass
 
 
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    """Handle each request in a new thread so slow API calls don't block."""
+
+    daemon_threads = True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="dashboard",
@@ -516,7 +720,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8080, help="Port to listen on")
     args = parser.parse_args()
 
-    server = HTTPServer(("0.0.0.0", args.port), DashboardHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", args.port), DashboardHandler)
     print(f"Dashboard running at http://localhost:{args.port}")
     print("Press Ctrl-C to stop.\n")
     try:

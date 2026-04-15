@@ -38,14 +38,14 @@ The implementation correctly delivers all spec requirements: batch types, `Batch
 3. **Consider adding `ListModels` capability to the gateway**
    The gateway `Capabilities()` returns `ListModels: false`. If the gateway supports `/v1/models`, implementing `ModelLister` would make the provider more feature-complete. Not required by spec.
 
-4. **Use of `log.Printf` for body close errors is consistent with existing patterns**
-   The `log.Printf` for `resp.Body.Close()` errors follows the Z.ai provider pattern exactly. No change needed, but consider using a structured logger if the SDK evolves.
+4. **`log.Printf` for body close errors is consistent with existing patterns**
+   The `log.Printf` for `resp.Body.Close()` errors follows the Z.ai provider pattern. No change needed, but consider using a structured logger if the SDK evolves.
 
-5. **`parseBatchNotCompleteDetail` regex is well-designed**
-   The compiled regex `batchNotCompleteRE` handles both "Batch" and "batch" prefixes and extracts batch ID and status cleanly. Tests cover standard, lowercase, and unrecognized formats. Good work.
+5. **Test coverage is thorough**
+   All spec-required unit tests are present: construction tests (4), completion tests (3), batch CRUD tests (5+), error mapping tests (5 HTTP status codes + 429), streaming test, helper function tests. Patterns are idiomatic (`t.Parallel()`, `httptest`, `require`, table-driven subtests). Extra tests beyond spec: `TestCapabilities`, `TestCompletionStreamSuccess`, `TestParseBatchNotCompleteDetail`, `TestConvertParamsToRequest`, `TestListBatchesWithoutPagination`, `TestBatchError429`.
 
-6. **Test coverage is thorough**
-   All spec-required unit tests are present: construction tests (4), completion tests (3), batch CRUD tests (5+), error mapping tests (5 HTTP status codes + 429), streaming test, helper function tests. The test patterns are idiomatic (`t.Parallel()`, `httptest`, `require`, table-driven subtests).
+6. **Re-exports in `anyllm.go` are well-organized**
+   Batch types grouped in own `type (...)` block, batch status constants in own `const (...)` block with alphabetical ordering. `BatchNotCompleteError` and `ErrBatchNotComplete` added to existing error type/sentinel groups. Clean integration.
 
-7. **Re-exports in `anyllm.go` are well-organized**
-   The batch types are grouped in their own `type (...)` block, and batch status constants are in their own `const (...)` block with alphabetical ordering. The `BatchNotCompleteError` and `ErrBatchNotComplete` are added to the existing error type/sentinel groups. Clean integration.
+7. **`parseBatchNotCompleteDetail` regex is well-designed**
+   Compiled regex `batchNotCompleteRE` handles both "Batch" and "batch" prefixes and extracts batch ID and status. Tests cover standard, lowercase, and unrecognized formats.

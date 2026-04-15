@@ -40,7 +40,11 @@ from lib.workspace import (
     worktrees_exist,
 )
 from lib.costs import save_costs
-from lib.engineer import run_build_pipelines, run_cross_repo_review
+from lib.engineer import (
+    run_build_pipelines,
+    run_cross_repo_review,
+    run_cross_review_fixes,
+)
 from lib.status import PHASES_BY_TYPE, init_status, update_phase
 
 
@@ -55,6 +59,7 @@ SKIP_TO_PHASES = (
     "architect",
     "build",
     "cross-review",
+    "cross-review-fix",
 )
 
 
@@ -89,8 +94,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--fix-pr",
+        nargs="?",
+        const="all",
         metavar="REPO",
-        help="Fetch PR review comments and send engineer to fix. Requires --resume.",
+        help="Fetch PR review comments and send engineer to fix for all repos (or a specific repo). Requires --resume.",
+    )
+    parser.add_argument(
+        "--fix-cross-review",
+        nargs="?",
+        const="all",
+        metavar="REPO",
+        help=(
+            "Fix cross-review findings for all affected repos (or a specific "
+            "repo). Requires --resume."
+        ),
     )
     return parser
 
@@ -257,6 +274,33 @@ def phase_cross_review(slug: str, repo_names: list[str]) -> None:
         update_phase(slug, "cross-review", "skipped", paths)
 
 
+def phase_cross_review_fix(slug: str, repo_names: list[str]) -> None:
+    """Fix cross-review findings in affected repos (parallel)."""
+    paths = get_project_paths()
+    cross_review_file = paths.spec_file(slug, "cross-review.md")
+
+    if not cross_review_file.exists():
+        print("  [skip] No cross-review file -- nothing to fix.")
+        update_phase(slug, "cross-review-fix", "skipped", paths)
+        return
+
+    # Quick check: if the review is a clean PASS with no findings, skip.
+    content = cross_review_file.read_text(encoding="utf-8")
+    if "Summary of Findings" not in content:
+        print("  [skip] Cross-review has no findings table.")
+        update_phase(slug, "cross-review-fix", "skipped", paths)
+        return
+
+    update_phase(slug, "cross-review-fix", "running", paths)
+    affected = run_cross_review_fixes(slug, repo_names, paths)
+
+    if affected:
+        update_phase(slug, "cross-review-fix", "done", paths)
+    else:
+        print("  [skip] No repos had actionable findings to fix.")
+        update_phase(slug, "cross-review-fix", "skipped", paths)
+
+
 # ── Main pipeline ─────────────────────────────────────────────────────
 
 _PATH_HEADER = {
@@ -306,24 +350,54 @@ def _run_fix_pr(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     slug = triage.slug
-    repo_name = args.fix_pr
+    target = args.fix_pr
+    repos = [target] if target != "all" else triage.repos
 
-    if repo_name not in triage.repos:
+    if target != "all" and target not in triage.repos:
         print(
-            f"[ERROR] Repo {repo_name!r} not in feature repos: {triage.repos}",
+            f"[ERROR] Repo {target!r} not in feature repos: {triage.repos}",
             file=sys.stderr,
         )
         sys.exit(1)
 
     print(f"\n── Fix PR Feedback ─────────────────────────────────")
-    print(f"  Slug: {slug}")
-    print(f"  Repo: {repo_name}")
+    print(f"  Slug:  {slug}")
+    print(f"  Repos: {', '.join(repos)}")
     print("────────────────────────────────────────────────────\n")
 
-    step_fix_pr(slug, repo_name, paths)
+    for name in repos:
+        wt_path = paths.worktree_path(slug, name)
+        if not wt_path.exists():
+            print(f"  [{name}] No worktree found, skipping.")
+            continue
+        step_fix_pr(slug, name, paths)
 
     print(f"\n  Done. To re-check CI:")
-    print(f"  uv run orchestrate.py --resume {slug} --ci-check {repo_name}\n")
+    print(f"  uv run orchestrate.py --resume {slug} --ci-check\n")
+    save_costs(slug, paths)
+
+
+def _run_fix_cross_review(args: argparse.Namespace) -> None:
+    """Fix cross-review findings for all or a specific repo."""
+    paths = get_project_paths()
+    triage = load_triage(args.resume, paths)
+    if triage is None:
+        print(f"[ERROR] No triage found for slug {args.resume!r}.", file=sys.stderr)
+        sys.exit(1)
+
+    slug = triage.slug
+    target = args.fix_cross_review
+    repos = [target] if target != "all" else triage.repos
+
+    print("\n── Fix Cross-Review Findings ────────────────────────")
+    print(f"  Slug:  {slug}")
+    print(f"  Repos: {', '.join(repos)}")
+    print("────────────────────────────────────────────────────\n")
+
+    phase_cross_review_fix(slug, repos)
+
+    print("\n  Done. To re-check CI:")
+    print(f"  uv run orchestrate.py --resume {slug} --ci-check\n")
     save_costs(slug, paths)
 
 
@@ -341,6 +415,13 @@ def run_pipeline(args: argparse.Namespace) -> None:
             print("[ERROR] --fix-pr requires --resume.", file=sys.stderr)
             sys.exit(1)
         _run_fix_pr(args)
+        return
+
+    if args.fix_cross_review is not None:
+        if not args.resume:
+            print("[ERROR] --fix-cross-review requires --resume.", file=sys.stderr)
+            sys.exit(1)
+        _run_fix_cross_review(args)
         return
 
     # Full pipeline.
@@ -387,6 +468,10 @@ def run_pipeline(args: argparse.Namespace) -> None:
     # Cross-repo review: only sync point.
     if not _should_skip("cross-review", skip_to):
         phase_cross_review(slug, repo_names)
+
+    # Fix cross-review findings (if any).
+    if not _should_skip("cross-review-fix", skip_to):
+        phase_cross_review_fix(slug, repo_names)
 
     # Done.
     paths = get_project_paths()
