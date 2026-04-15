@@ -48,11 +48,11 @@ from lib.status import PHASES_BY_TYPE, init_status, update_phase
 
 SKIP_TO_PHASES = (
     "intake",
+    "workspace",
     "pm",
     "debate",
     "designer",
     "architect",
-    "workspace",
     "engineer",
     "review",
     "pr",
@@ -236,10 +236,15 @@ def phase_complex_bug(
 
 
 def phase_workspace(slug: str, repo_names: list[str]) -> dict[str, Path]:
-    """Phase 5: Clone repos and create worktrees."""
+    """Workspace: Clone repos and create worktrees.
+
+    Runs early in the pipeline (right after triage) so that all
+    subsequent agents have the repo code available in
+    ``specs/<slug>/repos/<repo>/``.
+    """
     paths = get_project_paths()
 
-    print("\n── Phase 5: Workspace setup ─────────────────────────")
+    print("\n── Workspace setup ─────────────────────────────────")
     update_phase(slug, "workspace", "running", paths)
 
     if worktrees_exist(slug, repo_names, paths):
@@ -252,11 +257,6 @@ def phase_workspace(slug: str, repo_names: list[str]) -> dict[str, Path]:
 
     print("  Creating worktrees...")
     worktrees = create_worktrees(slug, repo_names, paths)
-
-    # Set up context for each engineer.
-    print("  Setting up engineer context (AGENTS.md)...")
-    for name in worktrees:
-        setup_engineer_context(slug, name, paths)
 
     print("  Workspace ready.\n")
     update_phase(slug, "workspace", "done", paths)
@@ -382,29 +382,40 @@ def run_pipeline(args: argparse.Namespace) -> None:
         print(f"  Skip-to: {skip_to}")
     print(f"{'=' * 56}")
 
-    # Phases 2-4: depends on triage type.
-    if triage.triage_type == "feature":
-        repo_names = phase_feature(slug, repo_names, skip_to)
-    elif triage.triage_type == "complex-bug":
-        repo_names = phase_complex_bug(slug, repo_names, skip_to)
-    # simple-bug skips straight to workspace.
-
-    # Phase 5: Workspace.
+    # Workspace: set up right after triage so all subsequent agents
+    # (PM, architect, engineers) have access to the repo worktrees
+    # inside specs/<slug>/repos/.
     if not _should_skip("workspace", skip_to):
         phase_workspace(slug, repo_names)
     else:
         print("  [skip-to] skipping workspace phase")
 
-    # Phase 6-7: Engineers + review.
+    # Phases 2-4: depends on triage type.
+    if triage.triage_type == "feature":
+        repo_names = phase_feature(slug, repo_names, skip_to)
+    elif triage.triage_type == "complex-bug":
+        repo_names = phase_complex_bug(slug, repo_names, skip_to)
+    # simple-bug skips straight to engineers.
+
+    # Set up engineer context (AGENTS.md) after architect may have
+    # adjusted the repo list or written per-repo specs.
+    if not _should_skip("engineer", skip_to):
+        paths = get_project_paths()
+        print("  Setting up engineer context (AGENTS.md)...")
+        for name in repo_names:
+            if paths.worktree_path(slug, name).exists():
+                setup_engineer_context(slug, name, paths)
+
+    # Engineers + review.
     phase_engineer_and_review(slug, repo_names, skip_to)
 
-    # Phase 8: Pull requests.
+    # Pull requests.
     if not _should_skip("pr", skip_to):
         phase_pull_requests(slug, repo_names)
     else:
         print("  [skip-to] skipping PR phase")
 
-    # Phase 9: CI watch + fix loop.
+    # CI watch + fix loop.
     if not _should_skip("ci", skip_to):
         phase_ci_watch(slug, repo_names)
     else:

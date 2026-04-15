@@ -78,10 +78,25 @@ def run_architect(
             "6. Testing strategy\n"
         )
 
+    # List which worktrees are available.
+    worktree_listing = "\n".join(
+        f"- `repos/{name}/` ({REPO_BY_NAME[name].language})"
+        for name in repo_names
+        if name in REPO_BY_NAME and (spec_dir / "repos" / name).exists()
+    )
+
     prompt = (
         f"You are the Technical Architect for this work.\n\n"
-        f"ALL files you need to read or write are in the current directory.\n"
+        f"## Working directory\n"
+        f"ALL spec files you read or write are in the current directory.\n"
         f"Do NOT access files outside this directory.\n\n"
+        f"## Repository code\n"
+        f"The source code for each affected repository is available as a\n"
+        f"worktree under `repos/` in the current directory. You can browse\n"
+        f"the code to understand existing APIs, types, and patterns:\n"
+        f"{worktree_listing}\n\n"
+        f"Use these to inform your specs -- check existing interfaces,\n"
+        f"naming conventions, and test patterns before designing new ones.\n\n"
         f"## Context files (in the current directory)\n"
         f"Read these files for the full context:\n"
         + "\n".join(f"- {f}" for f in context_files)

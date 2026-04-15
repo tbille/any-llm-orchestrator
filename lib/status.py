@@ -13,13 +13,14 @@ from lib.config import ProjectPaths
 # ── Phase definitions ─────────────────────────────────────────────────
 
 # Ordered list of all phases.  The pipeline skips some depending on triage type.
+# Workspace runs early so all agents have access to repo worktrees.
 ALL_PHASES = (
     "intake",
+    "workspace",
     "pm",
     "debate",
     "designer",
     "architect",
-    "workspace",
     "engineer",
     "review",
     "pr",
@@ -31,8 +32,8 @@ PHASES_BY_TYPE = {
     "feature": ALL_PHASES,
     "complex-bug": (
         "intake",
-        "architect",
         "workspace",
+        "architect",
         "engineer",
         "review",
         "pr",

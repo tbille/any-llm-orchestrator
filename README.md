@@ -43,16 +43,15 @@ uv run orchestrate.py --resume add-batch-api --skip-to engineer
 The orchestrator triages the input and routes it through one of three paths:
 
 ```
-                         ┌─ simple-bug ──────────────────────────────┐
-                         │                                           │
-Input ─> Triage ─────────┼─ complex-bug ──> Architect (light) ──────┤
-                         │                                           │
+                                           Workspace setup
+                                           (clone + worktrees)
+                                                  │
+                         ┌─ simple-bug ────────────┼──────────────────┐
+                         │                         │                  │
+Input ─> Triage ─────────┼─ complex-bug ──> Architect (light) ───────┤
+                         │                         │                  │
                          └─ feature ──> PM ──> Debate ──> Designer? ─┤
-                                                    ──> Architect    │
-                                                                     v
-                                                              Workspace setup
-                                                              (clone + worktrees)
-                                                                     │
+                                                   ──> Architect     │
                                                                      v
                                                               Engineers (tmux)
                                                                      │
@@ -68,6 +67,8 @@ Input ─> Triage ─────────┼─ complex-bug ──> Architec
                                                               (max 2 rounds)
 ```
 
+Workspace runs right after triage so that all subsequent agents (PM, architect, engineers) have the repository code available under `specs/<slug>/repos/`.
+
 ### Phases
 
 | Phase | Mode | What happens |
@@ -77,7 +78,7 @@ Input ─> Triage ─────────┼─ complex-bug ──> Architec
 | **Debate** | Interactive TUI | A reviewer agent critiques the PRD. You participate until satisfied. |
 | **Designer** | Interactive TUI (conditional) | Creates UX/DX proposals if the feature has user-facing impact. Skipped for pure technical changes. |
 | **Architect** | Interactive TUI | Creates a tech spec with shared interface contracts and per-repo implementation specs. |
-| **Workspace** | Automated | Clones missing repos into `repos/`, creates git worktrees via `wt` into `specs/<slug>/repos/`. |
+| **Workspace** | Automated | Runs right after triage. Clones missing repos into `repos/`, creates git worktrees via `wt` into `specs/<slug>/repos/`. All subsequent agents can browse the code. |
 | **Engineers** | Parallel tmux panes | One `opencode run` per repo. Each sees only its own code and spec. |
 | **Code Review** | Parallel tmux panes | Per-repo review, then cross-repo consistency check. Auto-loops back to engineers if issues are found (max 2 rounds). |
 | **Pull Requests** | Parallel tmux panes | Creates PRs via `gh pr create`. Detects and uses repo PR templates if present. |
