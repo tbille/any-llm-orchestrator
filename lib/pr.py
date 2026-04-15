@@ -102,7 +102,7 @@ def _build_pr_command(
     ]
     parts += file_args
     parts += ["-f", shlex.quote(str(prompt_file))]
-    parts.append(shlex.quote("Follow the instructions in the attached prompt file."))
+    parts += ["--", shlex.quote("Follow the instructions in the attached prompt file.")]
 
     cmd = " ".join(parts)
     return (
@@ -431,7 +431,7 @@ def _build_ci_fix_command(
     ]
     parts += file_args
     parts += ["-f", shlex.quote(str(prompt_file))]
-    parts.append(shlex.quote("Follow the instructions in the attached prompt file."))
+    parts += ["--", shlex.quote("Follow the instructions in the attached prompt file.")]
 
     cmd = " ".join(parts)
     return f'{cmd} 2>&1 | tee {shlex.quote(str(log_file))}; echo "[CI FIX DONE: {repo_name}]"'

@@ -164,7 +164,9 @@ def _build_engineer_command(
     parts += file_args
     # Pass prompt via file to avoid shell quoting issues in tmux.
     parts += ["-f", shlex.quote(str(prompt_file))]
-    parts.append(shlex.quote("Follow the instructions in the attached prompt file."))
+    # "--" separates flags from the positional message so opencode
+    # doesn't try to resolve the message text as a file path.
+    parts += ["--", shlex.quote("Follow the instructions in the attached prompt file.")]
 
     # Wrap in a shell command that tees output to a log file.
     cmd = " ".join(parts)
@@ -270,7 +272,7 @@ def _build_review_command(
     ]
     parts += file_args
     parts += ["-f", shlex.quote(str(prompt_file))]
-    parts.append(shlex.quote("Follow the instructions in the attached prompt file."))
+    parts += ["--", shlex.quote("Follow the instructions in the attached prompt file.")]
 
     cmd = " ".join(parts)
     return f'{cmd} 2>&1 | tee {shlex.quote(str(log_file))}; echo "[REVIEW DONE: {repo_name}]"'
