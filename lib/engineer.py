@@ -7,7 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from lib.config import CAVEMAN_PROMPT, ProjectPaths
+from lib.config import CAVEMAN_PROMPT, REPO_BY_NAME, ProjectPaths
 
 
 # ── Tmux helpers ──────────────────────────────────────────────────────
@@ -189,8 +189,12 @@ def run_cross_repo_review(
         wt_path = paths.worktree_path(slug, name)
         if not wt_path.exists():
             continue
+        # Diff against the base branch to capture ALL feature changes,
+        # not just the last commit.
+        repo_info = REPO_BY_NAME.get(name)
+        base_branch = repo_info.default_branch if repo_info else "main"
         result = subprocess.run(
-            ["git", "diff", "HEAD~1..HEAD", "--stat"],
+            ["git", "diff", f"origin/{base_branch}...HEAD", "--stat"],
             cwd=str(wt_path),
             capture_output=True,
             text=True,
