@@ -33,6 +33,9 @@ uv run orchestrate.py --prompt "Add batch API support to all SDKs"
 
 # Resume a previous run
 uv run orchestrate.py --resume add-batch-api
+
+# Skip to a specific phase (e.g. re-run only the headless parts)
+uv run orchestrate.py --resume add-batch-api --skip-to engineer
 ```
 
 ## How it works
@@ -89,6 +92,7 @@ Each engineer agent runs in its own worktree directory with only its per-repo sp
 ```
 any-llm-world/
 ├── orchestrate.py              # CLI entry point
+├── dashboard.py                # Web dashboard server
 ├── lib/
 │   ├── config.py               # Repo registry, paths, ecosystem context
 │   ├── intake.py               # Issue fetching, triage classifier
@@ -96,7 +100,8 @@ any-llm-world/
 │   ├── architect.py            # Tech spec generation
 │   ├── workspace.py            # Repo cloning, worktree creation
 │   ├── engineer.py             # Tmux orchestration, review loop
-│   └── pr.py                  # PR creation, CI monitoring loop
+│   ├── pr.py                  # PR creation, CI monitoring loop
+│   └── status.py              # Status tracking for dashboard
 ├── .opencode/agents/           # Agent definitions
 │   ├── product-manager.md
 │   ├── reviewer.md
@@ -116,9 +121,48 @@ any-llm-world/
         ├── <repo>-review.md    # Per-repo code reviews
         ├── cross-review.md     # Cross-repo consistency review
         ├── <repo>-ci-failures.md  # CI failure logs (when fixes needed)
+        ├── status.json         # Phase progress (read by dashboard)
         ├── repos/              # Git worktrees (gitignored)
         └── logs/               # Agent output logs (gitignored)
 ```
+
+## Dashboard
+
+Monitor all active features from a browser:
+
+```sh
+uv run dashboard.py              # http://localhost:8080
+uv run dashboard.py --port 9090  # custom port
+```
+
+The dashboard auto-refreshes every 5 seconds and shows:
+- Phase progress bar per feature (color coded: green=done, blue=running, gray=pending)
+- Per-repo status within the active phase
+- Active tmux sessions
+- PR links and CI status
+
+## Running multiple features in parallel
+
+Each feature is fully isolated by slug -- separate spec directories, worktrees, tmux sessions, and branches. You can run multiple orchestrators simultaneously:
+
+```sh
+# Terminal 1: complete interactive phases for Feature A
+uv run orchestrate.py --issue https://github.com/mozilla-ai/any-llm/issues/123
+
+# Terminal 2: start Feature B once A's interactive phases are done
+uv run orchestrate.py --prompt "Add rate limiting to the gateway"
+
+# Terminal 3: dashboard watches both
+uv run dashboard.py
+```
+
+To re-run only the headless phases (e.g. after editing a spec manually):
+
+```sh
+uv run orchestrate.py --resume add-batch-api --skip-to engineer
+```
+
+File locking on `repos/` ensures parallel orchestrators don't corrupt shared git state during clone or worktree creation.
 
 ## Resumability
 

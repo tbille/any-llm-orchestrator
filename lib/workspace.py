@@ -2,12 +2,41 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
+from collections.abc import Generator
 from pathlib import Path
 
 from lib.config import REPO_BY_NAME, REPOS, ProjectPaths
+
+
+# ── File locking (for parallel orchestrator safety) ───────────────────
+
+
+def _locks_dir(paths: ProjectPaths) -> Path:
+    d = paths.repos_dir / ".locks"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+@contextmanager
+def _repo_lock(paths: ProjectPaths, repo_name: str) -> Generator[None, None, None]:
+    """Acquire an exclusive file lock for a repo.
+
+    Prevents two parallel orchestrator processes from cloning or creating
+    worktrees in the same repo simultaneously.
+    """
+    lock_path = _locks_dir(paths) / f"{repo_name}.lock"
+    fd = lock_path.open("w")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        fd.close()
 
 
 # ── Clone ─────────────────────────────────────────────────────────────
@@ -23,11 +52,18 @@ def ensure_repos_cloned(paths: ProjectPaths) -> None:
             print(f"  [ok]   {repo.name} already cloned")
             continue
 
-        print(f"  [clone] {repo.name} -> {dest}")
-        subprocess.run(
-            ["git", "clone", repo.github_url, str(dest)],
-            check=True,
-        )
+        with _repo_lock(paths, repo.name):
+            # Re-check after acquiring the lock (another process may have
+            # cloned while we were waiting).
+            if dest.exists() and (dest / ".git").exists():
+                print(f"  [ok]   {repo.name} already cloned (raced)")
+                continue
+
+            print(f"  [clone] {repo.name} -> {dest}")
+            subprocess.run(
+                ["git", "clone", repo.github_url, str(dest)],
+                check=True,
+            )
 
 
 # ── Worktrees ─────────────────────────────────────────────────────────
@@ -69,45 +105,53 @@ def create_worktrees(
 
         print(f"  [wt]   creating worktree for {name} on branch {slug}")
 
-        # Override the worktree path template so wt places it where we want.
-        env = os.environ.copy()
-        env["WORKTRUNK_WORKTREE_PATH"] = str(wt_path)
+        with _repo_lock(paths, name):
+            # Re-check after lock in case another process created it.
+            if wt_path.exists():
+                print(f"  [ok]   worktree appeared (raced): {wt_path}")
+                result[name] = wt_path
+                continue
 
-        try:
-            subprocess.run(
-                [
-                    "wt",
-                    "switch",
-                    "--create",
-                    slug,
-                    "-y",  # skip approval prompts
-                    "--no-verify",  # skip hooks
-                    "--no-cd",  # don't try to cd
-                ],
-                cwd=str(repo_dir),
-                env=env,
-                check=True,
-            )
-        except subprocess.CalledProcessError:
-            # Fallback: use git worktree directly if wt has issues with
-            # the env override.
-            print(f"  [fallback] using git worktree add for {name}")
-            _git_worktree_add(repo_dir, wt_path, slug)
+            # Override the worktree path template so wt places it where we want.
+            env = os.environ.copy()
+            env["WORKTRUNK_WORKTREE_PATH"] = str(wt_path)
 
-        if wt_path.exists():
-            result[name] = wt_path
-        else:
-            # wt might have placed it elsewhere; try to find it.
-            found = _find_wt_path(repo_dir, slug)
-            if found:
-                print(f"  [info] wt placed worktree at {found}, symlinking")
-                wt_path.parent.mkdir(parents=True, exist_ok=True)
-                os.symlink(found, wt_path)
+            try:
+                subprocess.run(
+                    [
+                        "wt",
+                        "switch",
+                        "--create",
+                        slug,
+                        "-y",  # skip approval prompts
+                        "--no-verify",  # skip hooks
+                        "--no-cd",  # don't try to cd
+                    ],
+                    cwd=str(repo_dir),
+                    env=env,
+                    check=True,
+                )
+            except subprocess.CalledProcessError:
+                # Fallback: use git worktree directly if wt has issues with
+                # the env override.
+                print(f"  [fallback] using git worktree add for {name}")
+                _git_worktree_add(repo_dir, wt_path, slug)
+
+            if wt_path.exists():
                 result[name] = wt_path
             else:
-                print(
-                    f"  [error] could not locate worktree for {name}", file=sys.stderr
-                )
+                # wt might have placed it elsewhere; try to find it.
+                found = _find_wt_path(repo_dir, slug)
+                if found:
+                    print(f"  [info] wt placed worktree at {found}, symlinking")
+                    wt_path.parent.mkdir(parents=True, exist_ok=True)
+                    os.symlink(found, wt_path)
+                    result[name] = wt_path
+                else:
+                    print(
+                        f"  [error] could not locate worktree for {name}",
+                        file=sys.stderr,
+                    )
 
     return result
 
