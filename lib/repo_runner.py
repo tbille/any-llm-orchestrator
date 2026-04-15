@@ -899,15 +899,16 @@ def run_repo_pipeline(
     if not review_passed:
         print(
             f"  [{repo_name}] [WARN] Review never passed after "
-            f"{max_review_rounds} rounds. Proceeding to PR anyway.",
+            f"{max_review_rounds} rounds. Creating DRAFT PR for human review.",
             file=sys.stderr,
         )
         update_repo_step(slug, repo_name, "review-not-passed", paths)
 
-    # PR creation.
-    print(f"\n  [{repo_name}] -> pr")
+    # PR creation -- draft if the review never passed.
+    pr_label = "pr (draft)" if not review_passed else "pr"
+    print(f"\n  [{repo_name}] -> {pr_label}")
     update_repo_step(slug, repo_name, "pr", paths)
-    step_pr(slug, repo_name, paths)
+    step_pr(slug, repo_name, paths, draft=not review_passed)
 
     # CI watch + fix.
     print(f"\n  [{repo_name}] -> ci-watch")
