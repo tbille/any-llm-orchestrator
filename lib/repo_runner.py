@@ -45,7 +45,7 @@ def _run_opencode(
     parts += ["--", shlex.quote("Follow the instructions in the attached prompt file.")]
 
     cmd = " ".join(parts) + f" 2>&1 | tee -a {shlex.quote(str(log_file))}"
-    result = subprocess.run(["sh", "-c", cmd])
+    result = subprocess.run(["sh", "-c", cmd], cwd=str(wt_path))
     return result.returncode
 
 
