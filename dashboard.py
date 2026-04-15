@@ -37,7 +37,6 @@ _jobs: dict[str, dict] = {}
 
 def _run_fix_prs_background(slug: str, repos: list[str]) -> None:
     """Run step_fix_pr for all repos in a background thread."""
-    from lib.costs import save_feature_costs
     from lib.repo_runner import step_fix_pr
 
     paths = get_project_paths()
