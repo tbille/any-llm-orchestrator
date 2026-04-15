@@ -285,6 +285,134 @@ def step_ci_watch(
         subprocess.run(["git", "push"], cwd=str(wt_path))
 
 
+# ── Step: Fix PR feedback ─────────────────────────────────────────────
+
+
+def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
+    """Fetch PR review comments and send the engineer to address them."""
+    wt_path = paths.worktree_path(slug, repo_name)
+    repo_info = REPO_BY_NAME.get(repo_name)
+    lang = repo_info.language if repo_info else "unknown"
+    log_file = paths.logs_dir(slug) / f"{repo_name}-pr-fix.log"
+    feedback_file = paths.spec_file(slug, f"{repo_name}-pr-feedback.md")
+
+    # Fetch PR comments and reviews via gh.
+    print(f"  [{repo_name}] Fetching PR review comments...")
+    pr_data = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "view",
+            "--json",
+            "title,url,reviews,comments",
+        ],
+        cwd=str(wt_path),
+        capture_output=True,
+        text=True,
+    )
+    if pr_data.returncode != 0:
+        print(
+            f"  [{repo_name}] No PR found or gh error: {pr_data.stderr.strip()[:100]}"
+        )
+        return
+
+    import json as _json
+
+    try:
+        data = _json.loads(pr_data.stdout)
+    except _json.JSONDecodeError:
+        print(f"  [{repo_name}] Could not parse PR data.")
+        return
+
+    # Also fetch inline review comments.
+    review_comments = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "view",
+            "--json",
+            "reviewDecision",
+            "--jq",
+            ".reviewDecision",
+        ],
+        cwd=str(wt_path),
+        capture_output=True,
+        text=True,
+    )
+
+    # Build feedback markdown.
+    lines = [
+        f"# PR Review Feedback: {repo_name}",
+        f"",
+        f"**PR:** {data.get('url', 'N/A')}",
+        f"**Title:** {data.get('title', 'N/A')}",
+        f"",
+    ]
+
+    reviews = data.get("reviews") or []
+    if reviews:
+        lines.append("## Reviews")
+        lines.append("")
+        for review in reviews:
+            author = review.get("author", {}).get("login", "unknown")
+            state = review.get("state", "")
+            body = review.get("body", "").strip()
+            lines.append(f"### @{author} ({state})")
+            if body:
+                lines.append(f"")
+                lines.append(body)
+            lines.append("")
+
+    comments = data.get("comments") or []
+    if comments:
+        lines.append("## General Comments")
+        lines.append("")
+        for comment in comments:
+            author = comment.get("author", {}).get("login", "unknown")
+            body = comment.get("body", "").strip()
+            if body:
+                lines.append(f"**@{author}:** {body}")
+                lines.append("")
+
+    if review_comments.returncode == 0 and review_comments.stdout.strip():
+        lines.append(f"## Review Decision: {review_comments.stdout.strip()}")
+        lines.append("")
+
+    feedback_content = "\n".join(lines)
+    feedback_file.write_text(feedback_content, encoding="utf-8")
+    print(f"  [{repo_name}] Feedback saved to: {feedback_file}")
+
+    if not reviews and not comments:
+        print(f"  [{repo_name}] No review comments found on the PR.")
+        return
+
+    # Send engineer to fix.
+    test_note = ""
+    if repo_info and repo_info.test_hints:
+        test_note = f" TESTING: {repo_info.test_hints}"
+
+    message = (
+        f"Address the PR review feedback in the attached file for this {lang} project. "
+        f"Read each comment carefully and make the requested changes. "
+        f"Commit your fixes in atomic commits."
+        f"{test_note}"
+    )
+
+    file_args: list[str] = ["-f", str(feedback_file)]
+    spec_file = paths.spec_file(slug, f"{repo_name}-spec.md")
+    if spec_file.exists():
+        file_args += ["-f", str(spec_file)]
+
+    prompt_file = paths.logs_dir(slug) / f"{repo_name}-pr-fix-prompt.md"
+    _write_prompt(prompt_file, message)
+    _run_opencode(wt_path, prompt_file, file_args, log_file)
+
+    # Push the fixes.
+    print(f"  [{repo_name}] Pushing fixes...")
+    subprocess.run(["git", "push"], cwd=str(wt_path))
+    print(f"  [{repo_name}] PR fixes pushed.")
+
+
 # ── Main pipeline ─────────────────────────────────────────────────────
 
 

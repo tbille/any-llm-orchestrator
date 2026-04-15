@@ -80,6 +80,18 @@ def build_parser() -> argparse.ArgumentParser:
         choices=SKIP_TO_PHASES,
         help=f"Skip to a specific phase (requires --resume). Choices: {', '.join(SKIP_TO_PHASES)}",
     )
+    parser.add_argument(
+        "--ci-check",
+        nargs="?",
+        const="all",
+        metavar="REPO",
+        help="Check CI status for all repos (or a specific repo). Requires --resume.",
+    )
+    parser.add_argument(
+        "--fix-pr",
+        metavar="REPO",
+        help="Fetch PR review comments and send engineer to fix. Requires --resume.",
+    )
     return parser
 
 
@@ -254,7 +266,84 @@ _PATH_HEADER = {
 }
 
 
+def _run_ci_check(args: argparse.Namespace) -> None:
+    """Standalone CI check for one or all repos."""
+    from lib.repo_runner import step_ci_watch
+
+    paths = get_project_paths()
+    triage = load_triage(args.resume, paths)
+    if triage is None:
+        print(f"[ERROR] No triage found for slug {args.resume!r}.", file=sys.stderr)
+        sys.exit(1)
+
+    slug = triage.slug
+    target = args.ci_check
+    repos = [target] if target != "all" else triage.repos
+
+    print(f"\n── CI Check ────────────────────────────────────────")
+    print(f"  Slug:  {slug}")
+    print(f"  Repos: {', '.join(repos)}")
+    print("────────────────────────────────────────────────────\n")
+
+    for name in repos:
+        wt_path = paths.worktree_path(slug, name)
+        if not wt_path.exists():
+            print(f"  [{name}] No worktree found, skipping.")
+            continue
+        step_ci_watch(slug, name, paths)
+
+    save_costs(slug, paths)
+
+
+def _run_fix_pr(args: argparse.Namespace) -> None:
+    """Fetch PR comments and send engineer to fix."""
+    from lib.repo_runner import step_fix_pr
+
+    paths = get_project_paths()
+    triage = load_triage(args.resume, paths)
+    if triage is None:
+        print(f"[ERROR] No triage found for slug {args.resume!r}.", file=sys.stderr)
+        sys.exit(1)
+
+    slug = triage.slug
+    repo_name = args.fix_pr
+
+    if repo_name not in triage.repos:
+        print(
+            f"[ERROR] Repo {repo_name!r} not in feature repos: {triage.repos}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print(f"\n── Fix PR Feedback ─────────────────────────────────")
+    print(f"  Slug: {slug}")
+    print(f"  Repo: {repo_name}")
+    print("────────────────────────────────────────────────────\n")
+
+    step_fix_pr(slug, repo_name, paths)
+
+    print(f"\n  Done. To re-check CI:")
+    print(f"  uv run orchestrate.py --resume {slug} --ci-check {repo_name}\n")
+    save_costs(slug, paths)
+
+
 def run_pipeline(args: argparse.Namespace) -> None:
+    # Handle standalone actions first.
+    if args.ci_check is not None:
+        if not args.resume:
+            print("[ERROR] --ci-check requires --resume.", file=sys.stderr)
+            sys.exit(1)
+        _run_ci_check(args)
+        return
+
+    if args.fix_pr is not None:
+        if not args.resume:
+            print("[ERROR] --fix-pr requires --resume.", file=sys.stderr)
+            sys.exit(1)
+        _run_fix_pr(args)
+        return
+
+    # Full pipeline.
     skip_to: str | None = getattr(args, "skip_to", None)
 
     if skip_to and not args.resume:
