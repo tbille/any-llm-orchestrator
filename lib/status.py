@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import re
 import subprocess
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from collections.abc import Generator
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -71,8 +76,30 @@ def _status_path(slug: str, paths: ProjectPaths) -> Path:
     return paths.spec_file(slug, "status.json")
 
 
+def _status_lock_path(slug: str, paths: ProjectPaths) -> Path:
+    return paths.spec_file(slug, ".status.lock")
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+@contextmanager
+def _status_lock(slug: str, paths: ProjectPaths) -> Generator[None, None, None]:
+    """Acquire an exclusive file lock for status.json updates.
+
+    Prevents concurrent tmux panes from clobbering each other's writes
+    during read-modify-write cycles.
+    """
+    paths.ensure_spec_dirs(slug)
+    lock_path = _status_lock_path(slug, paths)
+    fd = lock_path.open("w")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        fd.close()
 
 
 def load_status(slug: str, paths: ProjectPaths) -> dict | None:
@@ -84,9 +111,25 @@ def load_status(slug: str, paths: ProjectPaths) -> dict | None:
 
 
 def _save_status(slug: str, data: dict, paths: ProjectPaths) -> None:
+    """Write status.json atomically (write to temp file, then rename)."""
     paths.ensure_spec_dirs(slug)
     data["updated_at"] = _now()
-    _status_path(slug, paths).write_text(json.dumps(data, indent=2), encoding="utf-8")
+    dest = _status_path(slug, paths)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(dest.parent), prefix=".status-", suffix=".json"
+    )
+    closed = False
+    try:
+        os.write(fd, json.dumps(data, indent=2).encode("utf-8"))
+        os.close(fd)
+        closed = True
+        os.rename(tmp_path, str(dest))
+    except BaseException:
+        if not closed:
+            os.close(fd)
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
 
 
 def init_status(
@@ -135,32 +178,33 @@ def update_phase(
         repo_statuses: Optional per-repo status map, e.g.
             ``{"any-llm": "running", "gateway": "done"}``.
     """
-    data = load_status(slug, paths)
-    if data is None:
-        # Status file doesn't exist yet (e.g. --resume with old data).
-        # Create a minimal one.
-        data = {
-            "slug": slug,
-            "triage_type": "unknown",
-            "repos": [],
-            "current_phase": phase,
-            "phases": {},
-            "created_at": _now(),
-        }
+    with _status_lock(slug, paths):
+        data = load_status(slug, paths)
+        if data is None:
+            # Status file doesn't exist yet (e.g. --resume with old data).
+            # Create a minimal one.
+            data = {
+                "slug": slug,
+                "triage_type": "unknown",
+                "repos": [],
+                "current_phase": phase,
+                "phases": {},
+                "created_at": _now(),
+            }
 
-    phase_data = data.setdefault("phases", {}).setdefault(phase, {})
-    phase_data["status"] = status
+        phase_data = data.setdefault("phases", {}).setdefault(phase, {})
+        phase_data["status"] = status
 
-    if status == "running":
-        phase_data["started_at"] = _now()
-        data["current_phase"] = phase
-    elif status in ("done", "failed"):
-        phase_data["finished_at"] = _now()
+        if status == "running":
+            phase_data["started_at"] = _now()
+            data["current_phase"] = phase
+        elif status in ("done", "failed"):
+            phase_data["finished_at"] = _now()
 
-    if repo_statuses is not None:
-        phase_data["repos"] = repo_statuses
+        if repo_statuses is not None:
+            phase_data["repos"] = repo_statuses
 
-    _save_status(slug, data, paths)
+        _save_status(slug, data, paths)
 
 
 def update_repo_step(
@@ -174,48 +218,49 @@ def update_repo_step(
     Called by ``repo_runner.py`` as each repo progresses through
     engineer -> review -> pr -> ci-watch -> done.
     """
-    data = load_status(slug, paths)
-    if data is None:
-        return
+    with _status_lock(slug, paths):
+        data = load_status(slug, paths)
+        if data is None:
+            return
 
-    repo_progress = data.setdefault("repo_progress", {})
-    prev = repo_progress.get(repo_name, {})
+        repo_progress = data.setdefault("repo_progress", {})
+        prev = repo_progress.get(repo_name, {})
 
-    now = _now()
-    entry: dict = {"step": step, "updated_at": now}
+        now = _now()
+        entry: dict = {"step": step, "updated_at": now}
 
-    # Track when this step started.  If the step changed, record a
-    # new started_at; otherwise preserve the existing one.
-    if prev.get("step") != step:
-        entry["started_at"] = now
-        # Record previous step in history for timeline view.
-        history = prev.get("history", [])
-        if prev.get("step") and prev.get("started_at"):
-            history.append(
-                {
-                    "step": prev["step"],
-                    "started_at": prev["started_at"],
-                    "finished_at": now,
-                }
-            )
-        entry["history"] = history
-    else:
-        entry["started_at"] = prev.get("started_at", now)
-        entry["history"] = prev.get("history", [])
+        # Track when this step started.  If the step changed, record a
+        # new started_at; otherwise preserve the existing one.
+        if prev.get("step") != step:
+            entry["started_at"] = now
+            # Record previous step in history for timeline view.
+            history = prev.get("history", [])
+            if prev.get("step") and prev.get("started_at"):
+                history.append(
+                    {
+                        "step": prev["step"],
+                        "started_at": prev["started_at"],
+                        "finished_at": now,
+                    }
+                )
+            entry["history"] = history
+        else:
+            entry["started_at"] = prev.get("started_at", now)
+            entry["history"] = prev.get("history", [])
 
-    repo_progress[repo_name] = entry
+        repo_progress[repo_name] = entry
 
-    # Keep current_phase updated while repos are running.
-    # Guard: only set it if the relevant phase hasn't already completed,
-    # so that late repo-step updates don't regress current_phase.
-    xfix_status = data.get("phases", {}).get("cross-review-fix", {}).get("status")
-    build_status = data.get("phases", {}).get("build", {}).get("status")
-    if xfix_status in ("running",):
-        data["current_phase"] = "cross-review-fix"
-    elif build_status not in ("done", "failed"):
-        data["current_phase"] = "build"
+        # Keep current_phase updated while repos are running.
+        # Guard: only set it if the relevant phase hasn't already completed,
+        # so that late repo-step updates don't regress current_phase.
+        xfix_status = data.get("phases", {}).get("cross-review-fix", {}).get("status")
+        build_status = data.get("phases", {}).get("build", {}).get("status")
+        if xfix_status in ("running",):
+            data["current_phase"] = "cross-review-fix"
+        elif build_status not in ("done", "failed"):
+            data["current_phase"] = "build"
 
-    _save_status(slug, data, paths)
+        _save_status(slug, data, paths)
 
 
 # ── Load all features ─────────────────────────────────────────────────

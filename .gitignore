@@ -15,3 +15,6 @@ repos/
 # Worktrees inside specs are managed by the tool
 specs/*/repos/
 specs/*/logs/
+
+# Status lock files
+specs/*/.status.lock
