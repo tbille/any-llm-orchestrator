@@ -39,6 +39,7 @@ from lib.workspace import (
     setup_engineer_context,
     worktrees_exist,
 )
+from lib.costs import save_costs
 from lib.engineer import run_engineers, run_review_loop
 from lib.pr import create_pull_requests, watch_ci
 from lib.status import PHASES_BY_TYPE, init_status, update_phase
@@ -425,8 +426,19 @@ def run_pipeline(args: argparse.Namespace) -> None:
     paths = get_project_paths()
     update_phase(slug, "ci", "done", paths)
 
+    # Save final cost summary.
+    cost_file = save_costs(slug, paths)
+    if cost_file:
+        from lib.costs import get_feature_costs
+
+        costs = get_feature_costs(slug, paths)
+        cost_str = f"${costs['total_cost']:.2f}" if costs else "N/A"
+    else:
+        cost_str = "N/A (opencode DB not found)"
+
     print(f"\n{'=' * 56}")
     print(f"  Pipeline complete for: {slug}")
+    print(f"  Cost:       {cost_str}")
     print(f"  Specs:      specs/{slug}/")
     print(f"  Worktrees:  specs/{slug}/repos/")
     print(f"  Logs:       specs/{slug}/logs/")

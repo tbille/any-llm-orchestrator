@@ -12,6 +12,7 @@ import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from lib.config import get_project_paths
+from lib.costs import get_feature_costs
 from lib.status import (
     ALL_PHASES,
     PHASE_LABELS,
@@ -49,6 +50,9 @@ def _build_api_response() -> dict:
             )
         else:
             feat["pr_info"] = {}
+
+        # Cost data from the opencode DB.
+        feat["costs"] = get_feature_costs(slug, paths) or {}
 
     return {
         "features": features,
@@ -133,6 +137,14 @@ DASHBOARD_HTML = """\
   .log-toggle { font-size: 12px; padding: 3px 10px; border-radius: 4px; cursor: pointer;
                 background: rgba(139,148,158,0.1); color: var(--muted); border: 1px solid var(--border);
                 margin-left: 8px; }
+
+  /* Cost display */
+  .cost-bar { display: flex; gap: 16px; flex-wrap: wrap; align-items: center;
+              margin-top: 12px; padding: 10px 14px; background: var(--bg);
+              border-radius: 6px; font-size: 13px; }
+  .cost-total { font-weight: 600; color: var(--text); font-size: 15px; }
+  .cost-detail { color: var(--muted); font-size: 12px; }
+  .cost-repo { font-size: 11px; color: var(--muted); font-family: monospace; }
   .log-toggle:hover { background: rgba(139,148,158,0.2); color: var(--text); }
 
   .notif-banner { font-size: 12px; padding: 6px 12px; border-radius: 6px; cursor: pointer;
@@ -307,6 +319,26 @@ function render(data) {
       '<span class="tmux-badge">' + s + "</span>"
     ).join("");
 
+    // Cost display
+    const costs = f.costs || {};
+    let costHtml = "";
+    if (costs.total_cost > 0) {
+      const repoCosts = Object.entries(costs.by_repo || {})
+        .sort((a, b) => b[1].cost - a[1].cost)
+        .map(([name, d]) => '<span class="cost-repo">' + name + ": $" + d.cost.toFixed(2) + "</span>")
+        .join(" &middot; ");
+      const outputTok = costs.total_output_tokens || 0;
+      const tokStr = outputTok >= 1000000 ? (outputTok / 1000000).toFixed(1) + "M" :
+                     outputTok >= 1000 ? (outputTok / 1000).toFixed(1) + "K" : outputTok;
+      costHtml = '<div class="cost-bar">' +
+        '<span class="cost-total">$' + costs.total_cost.toFixed(2) + '</span>' +
+        '<span class="cost-detail">' + tokStr + ' output tokens &middot; ' +
+          (costs.sessions || 0) + ' sessions &middot; ' +
+          (costs.messages || 0) + ' messages</span>' +
+        (repoCosts ? '<div style="width:100%">' + repoCosts + '</div>' : '') +
+        '</div>';
+    }
+
     return '<div class="card">' +
       '<div class="card-header">' +
         '<span class="card-title">' + f.slug + '</span>' +
@@ -315,6 +347,7 @@ function render(data) {
       '<div class="phases">' + phaseBar + '</div>' +
       (repoRows ? '<table class="repos"><tr><th>Repo</th><th>Status</th><th>PR</th><th>CI</th></tr>' + repoRows + '</table>' : '') +
       (tmuxHtml ? '<div class="tmux-badges">tmux: ' + tmuxHtml + '</div>' : '') +
+      costHtml +
       '</div>';
   }).join("");
 }

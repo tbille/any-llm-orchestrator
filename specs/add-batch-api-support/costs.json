@@ -1,0 +1,68 @@
+{
+  "total_cost": 37.5429,
+  "total_input_tokens": 459,
+  "total_output_tokens": 206216,
+  "total_reasoning_tokens": 0,
+  "total_cache_read": 42090657,
+  "total_cache_write": 1814376,
+  "sessions": 15,
+  "messages": 429,
+  "by_repo": {
+    "any-llm": {
+      "cost": 19.8934,
+      "input_tokens": 202,
+      "output_tokens": 88383,
+      "reasoning_tokens": 0,
+      "cache_read": 23660342,
+      "cache_write": 936419,
+      "messages": 192
+    },
+    "gateway": {
+      "cost": 4.6945,
+      "input_tokens": 63,
+      "output_tokens": 28950,
+      "reasoning_tokens": 0,
+      "cache_read": 4492326,
+      "cache_write": 275888,
+      "messages": 55
+    },
+    "any-llm-rust": {
+      "cost": 3.4023,
+      "input_tokens": 54,
+      "output_tokens": 22560,
+      "reasoning_tokens": 0,
+      "cache_read": 3314080,
+      "cache_write": 188961,
+      "messages": 50
+    },
+    "any-llm-go": {
+      "cost": 5.7344,
+      "input_tokens": 73,
+      "output_tokens": 35695,
+      "reasoning_tokens": 0,
+      "cache_read": 6552736,
+      "cache_write": 250440,
+      "messages": 69
+    },
+    "any-llm-ts": {
+      "cost": 3.8183,
+      "input_tokens": 67,
+      "output_tokens": 30628,
+      "reasoning_tokens": 0,
+      "cache_read": 4071173,
+      "cache_write": 162668,
+      "messages": 63
+    }
+  },
+  "by_phase": {
+    "engineer": {
+      "cost": 37.5429,
+      "input_tokens": 459,
+      "output_tokens": 206216,
+      "reasoning_tokens": 0,
+      "cache_read": 42090657,
+      "cache_write": 1814376,
+      "messages": 429
+    }
+  }
+}
