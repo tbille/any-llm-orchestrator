@@ -218,9 +218,6 @@ DASHBOARD_HTML = """\
                  background: rgba(88,166,255,0.12); color: var(--accent); border: 1px solid rgba(88,166,255,0.3);
                  font-weight: 500; margin-left: 8px; transition: background 0.15s; }
    .action-btn:hover { background: rgba(88,166,255,0.25); }
-   .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-   .action-btn.btn-running { background: rgba(88,166,255,0.15); color: var(--blue);
-                              animation: pulse 2s ease-in-out infinite; }
 </style>
 </head>
 <body>
@@ -506,18 +503,14 @@ function render(data) {
     }
 
     // Fix PRs button: show when build phase is running or done.
+    // Always the same state — reviewers can add comments at any time.
     const buildPhase = (f.phases && f.phases.build) || {};
     const showFixBtn = buildPhase.status === "running" || buildPhase.status === "done";
-    const fixPrRunning = (f.tmux_sessions || []).some(s => s.startsWith("fix-pr-"));
     let fixBtnHtml = "";
     if (showFixBtn) {
       const btnId = "fix-pr-btn-" + f.slug;
       const onclickAttr = "fixPRs(&apos;" + f.slug + "&apos;)";
-      if (fixPrRunning) {
-        fixBtnHtml = '<button id="' + btnId + '" class="action-btn btn-running" disabled>Fixing PRs\u2026</button>';
-      } else {
-        fixBtnHtml = '<button id="' + btnId + '" class="action-btn" onclick="' + onclickAttr + '">Fix PRs</button>';
-      }
+      fixBtnHtml = '<button id="' + btnId + '" class="action-btn" onclick="' + onclickAttr + '">Fix PRs</button>';
     }
 
     return '<div class="card">' +
