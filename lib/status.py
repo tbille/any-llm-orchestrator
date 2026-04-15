@@ -291,7 +291,7 @@ def get_live_tmux_sessions() -> dict[str, list[str]]:
     """Return a map of slug -> list of active tmux session names.
 
     Session names are expected to follow the pattern ``<type>-<slug>``,
-    e.g. ``eng-add-batch-api``, ``review-add-batch-api``.
+    e.g. ``build-add-batch-api``.
     """
     result = subprocess.run(
         ["tmux", "list-sessions", "-F", "#{session_name}"],
@@ -305,7 +305,7 @@ def get_live_tmux_sessions() -> dict[str, list[str]]:
     for line in result.stdout.strip().splitlines():
         name = line.strip()
         # Parse prefix-slug pattern.
-        for prefix in ("eng-", "review-", "pr-", "ci-fix-"):
+        for prefix in ("build-", "eng-", "review-", "pr-", "ci-fix-"):
             if name.startswith(prefix):
                 slug = name[len(prefix) :]
                 # Handle suffixes like "-fix".
@@ -344,9 +344,9 @@ def get_pr_info_for_feature(
         )
         url = pr_result.stdout.strip() if pr_result.returncode == 0 else None
 
-        # Get CI status.
+        # Get CI status.  gh pr checks uses "state" not "conclusion".
         ci_result = subprocess.run(
-            ["gh", "pr", "checks", "--json", "state,conclusion"],
+            ["gh", "pr", "checks", "--json", "name,state"],
             cwd=str(wt_path),
             capture_output=True,
             text=True,
@@ -355,19 +355,21 @@ def get_pr_info_for_feature(
         if ci_result.returncode == 0:
             try:
                 checks = json.loads(ci_result.stdout)
-                if not checks:
+                # Filter out SKIPPED checks.
+                active = [c for c in checks if c.get("state", "").upper() != "SKIPPED"]
+                if not active:
                     ci = "none"
                 elif any(
                     c.get("state", "").upper() in ("IN_PROGRESS", "QUEUED", "PENDING")
-                    for c in checks
+                    for c in active
                 ):
                     ci = "pending"
                 elif any(
-                    c.get("conclusion", "").upper() in ("FAILURE", "TIMED_OUT")
-                    for c in checks
+                    c.get("state", "").upper() in ("FAILURE", "TIMED_OUT", "CANCELLED")
+                    for c in active
                 ):
                     ci = "fail"
-                elif all(c.get("conclusion", "").upper() == "SUCCESS" for c in checks):
+                elif all(c.get("state", "").upper() == "SUCCESS" for c in active):
                     ci = "pass"
                 else:
                     ci = "pending"
