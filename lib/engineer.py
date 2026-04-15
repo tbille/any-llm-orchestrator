@@ -25,42 +25,75 @@ def _tmux_session_exists(session: str) -> bool:
     return result.returncode == 0
 
 
-def _tmux_create_session(session: str, first_pane_cmd: str, cwd: str) -> None:
-    """Create a new tmux session with the first pane running a command."""
+def _tmux_launch_panes(
+    session: str,
+    commands: list[tuple[str, str]],
+) -> None:
+    """Create a tmux session and run commands in parallel panes.
+
+    Args:
+        session: Tmux session name.
+        commands: List of (shell_command, working_directory) tuples.
+
+    Each pane uses ``remain-on-exit on`` so that when the command
+    finishes, the pane stays visible with ``pane_dead=1``.  This lets
+    ``_tmux_wait_for_all_panes`` detect completion reliably.
+    """
+    if not commands:
+        return
+
+    first_cmd, first_cwd = commands[0]
+
+    # Create the session with /bin/sh to avoid zsh startup side-effects.
     subprocess.run(
         [
             TMUX,
             "new-session",
-            "-d",  # detached
+            "-d",
             "-s",
-            session,  # session name
-            "-c",
-            cwd,  # working directory
-            first_pane_cmd,
-        ],
-        check=True,
-    )
-
-
-def _tmux_add_pane(session: str, cmd: str, cwd: str) -> None:
-    """Split the current window to add a new pane."""
-    subprocess.run(
-        [
-            TMUX,
-            "split-window",
-            "-t",
             session,
             "-c",
-            cwd,
-            cmd,
+            first_cwd,
+            "-x",
+            "220",
+            "-y",
+            "50",
+            "/bin/sh",
         ],
         check=True,
     )
-    # Re-tile to keep panes evenly distributed.
+
+    # Enable remain-on-exit so panes become dead=1 instead of closing.
     subprocess.run(
-        [TMUX, "select-layout", "-t", session, "tiled"],
+        [TMUX, "set-option", "-t", session, "remain-on-exit", "on"],
         check=True,
     )
+
+    # Send the first command to pane 0.
+    subprocess.run(
+        [TMUX, "send-keys", "-t", f"{session}:0.0", f"{first_cmd}; exit", "Enter"],
+        check=True,
+    )
+
+    # Create additional panes for the remaining commands.
+    for cmd, cwd in commands[1:]:
+        subprocess.run(
+            [TMUX, "split-window", "-t", session, "-c", cwd, "/bin/sh"],
+            check=True,
+        )
+        subprocess.run(
+            [TMUX, "send-keys", "-t", session, f"{cmd}; exit", "Enter"],
+            check=True,
+        )
+
+    # Tile all panes evenly ONCE after all splits are done.
+    # Note: calling select-layout after each split with remain-on-exit
+    # causes tmux to create phantom panes -- so we tile only at the end.
+    if len(commands) > 1:
+        subprocess.run(
+            [TMUX, "select-layout", "-t", session, "tiled"],
+            check=True,
+        )
 
 
 def _tmux_attach(session: str) -> None:
@@ -68,9 +101,17 @@ def _tmux_attach(session: str) -> None:
     subprocess.run([TMUX, "attach-session", "-t", session])
 
 
-def _tmux_wait_for_all_panes(session: str, poll_interval: float = 5.0) -> None:
-    """Block until all panes in the session have finished their commands."""
-    while True:
+def _tmux_wait_for_all_panes(
+    session: str,
+    poll_interval: float = 10.0,
+    timeout: float = 7200.0,
+) -> bool:
+    """Block until all panes in the session have finished their commands.
+
+    Returns True if all panes finished, False on timeout.
+    """
+    elapsed = 0.0
+    while elapsed < timeout:
         result = subprocess.run(
             [
                 TMUX,
@@ -83,11 +124,27 @@ def _tmux_wait_for_all_panes(session: str, poll_interval: float = 5.0) -> None:
             capture_output=True,
             text=True,
         )
+        if result.returncode != 0:
+            # Session was killed externally.
+            return True
+
         statuses = result.stdout.strip().splitlines()
-        # pane_dead is "1" when the command has exited.
         if statuses and all(s.strip() == "1" for s in statuses):
-            break
+            return True
+
         time.sleep(poll_interval)
+        elapsed += poll_interval
+
+    print(f"  [warn] Timed out waiting for tmux session {session} after {timeout}s")
+    return False
+
+
+def _tmux_kill_session(session: str) -> None:
+    """Kill a tmux session if it exists."""
+    subprocess.run(
+        [TMUX, "kill-session", "-t", session],
+        capture_output=True,
+    )
 
 
 # ── Phase 6: Engineers ────────────────────────────────────────────────
@@ -200,7 +257,8 @@ def run_engineers(
 
     paths.logs_dir(slug).mkdir(parents=True, exist_ok=True)
 
-    for i, name in enumerate(repo_names):
+    pane_commands: list[tuple[str, str]] = []
+    for name in repo_names:
         review_file = (
             paths.spec_file(slug, f"{name}-review.md") if is_fix_round else None
         )
@@ -212,11 +270,9 @@ def run_engineers(
             review_file=review_file,
         )
         wt_path = str(paths.worktree_path(slug, name))
+        pane_commands.append((cmd, wt_path))
 
-        if i == 0:
-            _tmux_create_session(session_name, cmd, wt_path)
-        else:
-            _tmux_add_pane(session_name, cmd, wt_path)
+    _tmux_launch_panes(session_name, pane_commands)
 
     print(f"  Attaching to tmux session. Use Ctrl-B D to detach.\n")
     _tmux_attach(session_name)
@@ -224,6 +280,7 @@ def run_engineers(
     # After user detaches (or all panes finish), wait for completion.
     print("  Waiting for all engineer agents to finish...")
     _tmux_wait_for_all_panes(session_name)
+    _tmux_kill_session(session_name)
     print("  All engineers done.\n")
 
 
@@ -292,20 +349,20 @@ def run_code_reviews(slug: str, repo_names: list[str], paths: ProjectPaths) -> N
     print(f"  Repos:   {', '.join(repo_names)}")
     print("────────────────────────────────────────────────────\n")
 
-    for i, name in enumerate(repo_names):
+    pane_commands: list[tuple[str, str]] = []
+    for name in repo_names:
         cmd = _build_review_command(slug, name, paths)
         wt_path = str(paths.worktree_path(slug, name))
+        pane_commands.append((cmd, wt_path))
 
-        if i == 0:
-            _tmux_create_session(session_name, cmd, wt_path)
-        else:
-            _tmux_add_pane(session_name, cmd, wt_path)
+    _tmux_launch_panes(session_name, pane_commands)
 
     print(f"  Attaching to tmux session. Use Ctrl-B D to detach.\n")
     _tmux_attach(session_name)
 
     print("  Waiting for all reviewers to finish...")
     _tmux_wait_for_all_panes(session_name)
+    _tmux_kill_session(session_name)
     print("  All reviews done.\n")
 
 

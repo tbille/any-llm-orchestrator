@@ -13,9 +13,9 @@ from pathlib import Path
 
 from lib.config import REPO_BY_NAME, ProjectPaths
 from lib.engineer import (
-    _tmux_add_pane,
     _tmux_attach,
-    _tmux_create_session,
+    _tmux_kill_session,
+    _tmux_launch_panes,
     _tmux_session_exists,
     _tmux_wait_for_all_panes,
     run_engineers,
@@ -130,20 +130,20 @@ def create_pull_requests(
 
     paths.logs_dir(slug).mkdir(parents=True, exist_ok=True)
 
-    for i, name in enumerate(repo_names):
+    pane_commands: list[tuple[str, str]] = []
+    for name in repo_names:
         cmd = _build_pr_command(slug, name, paths)
         wt_path = str(paths.worktree_path(slug, name))
+        pane_commands.append((cmd, wt_path))
 
-        if i == 0:
-            _tmux_create_session(session_name, cmd, wt_path)
-        else:
-            _tmux_add_pane(session_name, cmd, wt_path)
+    _tmux_launch_panes(session_name, pane_commands)
 
     print("  Attaching to tmux session. Use Ctrl-B D to detach.\n")
     _tmux_attach(session_name)
 
     print("  Waiting for all PR agents to finish...")
     _tmux_wait_for_all_panes(session_name)
+    _tmux_kill_session(session_name)
     print("  All PRs created.\n")
 
 
@@ -366,9 +366,9 @@ def _run_ci_fix_engineers(
 ) -> None:
     """Launch engineers to fix CI failures."""
     from lib.engineer import (
-        _tmux_create_session,
-        _tmux_add_pane,
         _tmux_attach,
+        _tmux_kill_session,
+        _tmux_launch_panes,
         _tmux_wait_for_all_panes,
     )
 
@@ -377,20 +377,20 @@ def _run_ci_fix_engineers(
     print(f"\n  Launching CI fix engineers in tmux: {session_name}")
     paths.logs_dir(slug).mkdir(parents=True, exist_ok=True)
 
-    for i, name in enumerate(repo_names):
+    pane_commands: list[tuple[str, str]] = []
+    for name in repo_names:
         cmd = _build_ci_fix_command(slug, name, paths)
         wt_path = str(paths.worktree_path(slug, name))
+        pane_commands.append((cmd, wt_path))
 
-        if i == 0:
-            _tmux_create_session(session_name, cmd, wt_path)
-        else:
-            _tmux_add_pane(session_name, cmd, wt_path)
+    _tmux_launch_panes(session_name, pane_commands)
 
     print("  Attaching to tmux session. Use Ctrl-B D to detach.\n")
     _tmux_attach(session_name)
 
     print("  Waiting for CI fix engineers to finish...")
     _tmux_wait_for_all_panes(session_name)
+    _tmux_kill_session(session_name)
     print("  CI fix engineers done.\n")
 
 
