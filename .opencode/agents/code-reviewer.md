@@ -47,6 +47,11 @@ You are launched inside a repository worktree. Work only within this directory. 
 - Do changes break existing public APIs?
 - Are there deprecation warnings where needed?
 
+### Commit quality
+- Are commits atomic? Each commit should be a single logical change.
+- Are commit messages clear and descriptive (imperative mood)?
+- Could the commit history be followed to understand the implementation step by step?
+
 ## Review output format
 
 Write your review as a markdown file with this structure:

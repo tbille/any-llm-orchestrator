@@ -171,27 +171,31 @@ def _build_engineer_command(
     if review_file and review_file.exists():
         file_args += ["-f", str(review_file)]
 
-    lint_test_suffix = (
-        " Before committing, you MUST: "
-        "run the project linter and fix all lint errors, "
-        "run the full test suite and make sure all tests pass, "
-        "only commit once lint and tests are green. "
-        "Look at the project config files (pyproject.toml, Cargo.toml, "
-        "package.json, Makefile, etc.) to find the correct lint and test commands."
+    commit_instructions = (
+        " As you implement, commit your work in small, atomic commits. "
+        "Each commit should be a single logical change (one concept per "
+        "commit) with a clear, descriptive message in imperative mood. "
+        "Good examples: 'Add BatchRequest and BatchResponse types', "
+        "'Implement batch endpoint handler', 'Add unit tests for batch "
+        "processing'. Bad: one giant 'implement feature' commit. "
+        "Run the project linter and test suite regularly. Look at the "
+        "project config files (pyproject.toml, Cargo.toml, package.json, "
+        "Makefile, etc.) to find the correct lint and test commands. "
+        "Make sure lint and tests pass before your final commit."
     )
 
     if is_fix_round and review_file:
         message = (
             f"Review the code review feedback in the attached review file and "
             f"fix the issues found. This is a {lang} project."
-            f"{lint_test_suffix}"
+            f"{commit_instructions}"
         )
     else:
         message = (
             f"Implement the feature described in the attached spec for this "
             f"{lang} project. Follow the repository's existing patterns and "
             f"conventions. Write tests for your changes."
-            f"{lint_test_suffix}"
+            f"{commit_instructions}"
         )
 
     # For simple-bug path (no spec file), use the input directly.
@@ -202,7 +206,7 @@ def _build_engineer_command(
         message = (
             f"Fix the bug described in the attached issue for this {lang} project. "
             f"Follow the repository's existing patterns."
-            f"{lint_test_suffix}"
+            f"{commit_instructions}"
         )
 
     # Write the prompt to a file to avoid shell escaping issues with
