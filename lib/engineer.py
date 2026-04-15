@@ -114,18 +114,27 @@ def _build_engineer_command(
     if review_file and review_file.exists():
         file_args += ["-f", str(review_file)]
 
+    lint_test_instructions = (
+        f"\n\nBefore committing, you MUST:\n"
+        f"1. Run the project's linter and fix all lint errors.\n"
+        f"2. Run the full test suite and make sure all tests pass.\n"
+        f"3. Only commit once lint and tests are green.\n"
+        f"Look at the project's config files (pyproject.toml, Cargo.toml, "
+        f"package.json, Makefile, etc.) to find the correct lint and test commands."
+    )
+
     if is_fix_round and review_file:
         message = (
             f"Review the code review feedback in the attached review file and "
-            f"fix the issues found. This is a {lang} project. "
-            f"Run tests after making changes."
+            f"fix the issues found. This is a {lang} project."
+            f"{lint_test_instructions}"
         )
     else:
         message = (
             f"Implement the feature described in the attached spec for this "
             f"{lang} project. Follow the repository's existing patterns and "
-            f"conventions. Write tests for your changes. "
-            f"Commit your work when done."
+            f"conventions. Write tests for your changes."
+            f"{lint_test_instructions}"
         )
 
     # For simple-bug path (no spec file), use the input directly.
@@ -135,8 +144,8 @@ def _build_engineer_command(
             file_args += ["-f", str(input_file)]
         message = (
             f"Fix the bug described in the attached issue for this {lang} project. "
-            f"Follow the repository's existing patterns. "
-            f"Write tests and commit your work."
+            f"Follow the repository's existing patterns."
+            f"{lint_test_instructions}"
         )
 
     parts = [

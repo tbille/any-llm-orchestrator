@@ -39,6 +39,7 @@ from lib.workspace import (
     worktrees_exist,
 )
 from lib.engineer import run_engineers, run_review_loop
+from lib.pr import create_pull_requests, watch_ci
 
 
 # ── CLI ───────────────────────────────────────────────────────────────
@@ -188,6 +189,18 @@ def phase_engineer_and_review(slug: str, repo_names: list[str]) -> None:
     run_review_loop(slug, repo_names, paths, max_rounds=2)
 
 
+def phase_pull_requests(slug: str, repo_names: list[str]) -> None:
+    """Phase 8: Create pull requests for each repo."""
+    paths = get_project_paths()
+    create_pull_requests(slug, repo_names, paths)
+
+
+def phase_ci_watch(slug: str, repo_names: list[str]) -> None:
+    """Phase 9: Monitor CI, send engineers to fix failures."""
+    paths = get_project_paths()
+    watch_ci(slug, repo_names, paths, max_fix_rounds=2)
+
+
 # ── Main pipeline ─────────────────────────────────────────────────────
 
 
@@ -222,6 +235,12 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
     # Phase 6-7: Engineers + review.
     phase_engineer_and_review(slug, repo_names)
+
+    # Phase 8: Pull requests.
+    phase_pull_requests(slug, repo_names)
+
+    # Phase 9: CI watch + fix loop.
+    phase_ci_watch(slug, repo_names)
 
     # Done.
     print(f"\n{'=' * 56}")

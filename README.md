@@ -56,6 +56,13 @@ Input ─> Triage ─────────┼─ complex-bug ──> Architec
                                                                      v
                                                               Code review loop
                                                               (max 2 rounds)
+                                                                     │
+                                                                     v
+                                                              Pull requests
+                                                                     │
+                                                                     v
+                                                              CI watch + fix loop
+                                                              (max 2 rounds)
 ```
 
 ### Phases
@@ -70,6 +77,8 @@ Input ─> Triage ─────────┼─ complex-bug ──> Architec
 | **Workspace** | Automated | Clones missing repos into `repos/`, creates git worktrees via `wt` into `specs/<slug>/repos/`. |
 | **Engineers** | Parallel tmux panes | One `opencode run` per repo. Each sees only its own code and spec. |
 | **Code Review** | Parallel tmux panes | Per-repo review, then cross-repo consistency check. Auto-loops back to engineers if issues are found (max 2 rounds). |
+| **Pull Requests** | Parallel tmux panes | Creates PRs via `gh pr create`. Detects and uses repo PR templates if present. |
+| **CI Watch** | Automated (script) | Polls CI status via `gh pr checks`. If checks fail, sends engineers to fix and re-push (max 2 rounds). |
 
 ### Context isolation
 
@@ -86,13 +95,15 @@ any-llm-world/
 │   ├── prd.py                  # PM, debate, designer phases
 │   ├── architect.py            # Tech spec generation
 │   ├── workspace.py            # Repo cloning, worktree creation
-│   └── engineer.py             # Tmux orchestration, review loop
+│   ├── engineer.py             # Tmux orchestration, review loop
+│   └── pr.py                  # PR creation, CI monitoring loop
 ├── .opencode/agents/           # Agent definitions
 │   ├── product-manager.md
 │   ├── reviewer.md
 │   ├── designer.md
 │   ├── architect.md
-│   └── code-reviewer.md
+│   ├── code-reviewer.md
+│   └── pr-creator.md
 ├── repos/                      # Cloned repositories (gitignored)
 └── specs/                      # Feature specs and worktrees
     └── <slug>/
@@ -104,6 +115,7 @@ any-llm-world/
         ├── <repo>-spec.md      # Per-repo implementation specs
         ├── <repo>-review.md    # Per-repo code reviews
         ├── cross-review.md     # Cross-repo consistency review
+        ├── <repo>-ci-failures.md  # CI failure logs (when fixes needed)
         ├── repos/              # Git worktrees (gitignored)
         └── logs/               # Agent output logs (gitignored)
 ```
