@@ -133,6 +133,9 @@ Respond with ONLY a JSON object:
 """
 
 
+_DESIGN_CLASSIFIER_TIMEOUT = 120  # seconds
+
+
 def classify_design_need(slug: str, paths: ProjectPaths) -> bool:
     """Headless call to determine whether the designer phase is needed."""
     prd_file = paths.spec_file(slug, "prd.md")
@@ -142,20 +145,29 @@ def classify_design_need(slug: str, paths: ProjectPaths) -> bool:
     prd_content = prd_file.read_text(encoding="utf-8")
     prompt = _DESIGN_CLASSIFIER_PROMPT.format(prd_content=prd_content)
 
-    result = subprocess.run(
-        [
-            "opencode",
-            "run",
-            "--dir",
-            str(paths.root),
-            "--dangerously-skip-permissions",
-            "--format",
-            "json",
-            prompt,
-        ],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "opencode",
+                "run",
+                "--dir",
+                str(paths.root),
+                "--dangerously-skip-permissions",
+                "--format",
+                "json",
+                prompt,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_DESIGN_CLASSIFIER_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            f"  [WARN] Design classifier timed out after "
+            f"{_DESIGN_CLASSIFIER_TIMEOUT}s; assuming design needed.",
+            file=sys.stderr,
+        )
+        return True
 
     # Use the same JSON event stream parser as the triage classifier.
     reply = _extract_reply(result.stdout)

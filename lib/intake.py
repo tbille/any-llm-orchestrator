@@ -150,6 +150,9 @@ any-llm, gateway, any-llm-rust, any-llm-go, any-llm-ts, any-llm-platform
 """
 
 
+_CLASSIFIER_TIMEOUT = 120  # seconds -- classifiers are quick, catch hangs
+
+
 def classify(input_text: str, paths: ProjectPaths) -> TriageResult:
     """Run the headless classifier agent and return a TriageResult."""
     prompt = _CLASSIFIER_PROMPT.format(
@@ -157,20 +160,27 @@ def classify(input_text: str, paths: ProjectPaths) -> TriageResult:
         input_text=input_text,
     )
 
-    result = subprocess.run(
-        [
-            "opencode",
-            "run",
-            "--dir",
-            str(paths.root),
-            "--dangerously-skip-permissions",
-            "--format",
-            "json",
-            prompt,
-        ],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "opencode",
+                "run",
+                "--dir",
+                str(paths.root),
+                "--dangerously-skip-permissions",
+                "--format",
+                "json",
+                prompt,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_CLASSIFIER_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        _die(
+            f"Triage classifier timed out after {_CLASSIFIER_TIMEOUT}s. "
+            f"Check that opencode is working correctly."
+        )
 
     # opencode run --format json outputs newline-delimited JSON events.
     # The assistant's text reply is in message events.

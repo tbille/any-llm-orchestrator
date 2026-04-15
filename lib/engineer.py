@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -90,8 +91,17 @@ def _tmux_attach(session: str) -> None:
 def _tmux_wait_for_all_panes(
     session: str,
     poll_interval: float = 10.0,
+    timeout: float | None = None,
 ) -> bool:
-    """Block until all panes have finished. Returns True if all done."""
+    """Block until all panes have finished. Returns True if all done.
+
+    Args:
+        session: tmux session name.
+        poll_interval: Seconds between status checks.
+        timeout: Optional max seconds to wait. None means wait forever.
+                 If exceeded, logs a warning and returns False.
+    """
+    start = time.monotonic()
     while True:
         result = subprocess.run(
             [TMUX, "list-panes", "-t", session, "-F", "#{pane_dead}"],
@@ -104,6 +114,16 @@ def _tmux_wait_for_all_panes(
         statuses = result.stdout.strip().splitlines()
         if statuses and all(s.strip() == "1" for s in statuses):
             return True
+
+        if timeout is not None and (time.monotonic() - start) > timeout:
+            elapsed_min = (time.monotonic() - start) / 60
+            print(
+                f"  [WARN] Timeout after {elapsed_min:.1f} minutes "
+                f"waiting for tmux session {session!r}. "
+                f"Some panes may still be running.",
+                file=sys.stderr,
+            )
+            return False
 
         time.sleep(poll_interval)
 
