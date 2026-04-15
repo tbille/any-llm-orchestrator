@@ -4,3 +4,17 @@ version = "0.1.0"
 description = "Multi-repo orchestrator for the any-llm ecosystem"
 requires-python = ">=3.12"
 dependencies = []
+
+# This project has no pip-installable dependencies, but requires the
+# following system tools to be installed and available on PATH:
+#
+# Required:
+#   - opencode          AI coding agent CLI (https://opencode.ai)
+#   - gh                GitHub CLI (https://cli.github.com)
+#   - git               Git version control
+#   - tmux              Terminal multiplexer (parallel repo pipelines)
+#   - uv                Python package manager (https://docs.astral.sh/uv)
+#
+# Optional:
+#   - wt                Git worktree helper (https://github.com/nicholasgasior/wt)
+#                       Falls back to `git worktree add` if not installed.
