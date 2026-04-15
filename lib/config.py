@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -145,6 +146,33 @@ any-llm (Python) -> providers (OpenAI, Anthropic, etc.) directly OR via gateway
 - Changes to the gateway API surface affect ALL SDKs.
 - Changes to the Python SDK can affect the gateway (which imports it).
 """
+
+# ── Pipeline tunables ─────────────────────────────────────────────────
+# All values can be overridden via environment variables.
+
+
+def _env_int(key: str, default: int) -> int:
+    raw = os.environ.get(key, "")
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    return default
+
+
+MAX_REVIEW_ROUNDS: int = _env_int("ORCHESTRATOR_MAX_REVIEW_ROUNDS", 2)
+"""Maximum engineer -> review -> fix cycles before proceeding to PR."""
+
+MAX_CI_FIX_ROUNDS: int = _env_int("ORCHESTRATOR_MAX_CI_FIX_ROUNDS", 2)
+"""Maximum CI failure -> fix -> re-push cycles."""
+
+CI_POLL_INTERVAL: int = _env_int("ORCHESTRATOR_CI_POLL_INTERVAL", 30)
+"""Seconds between CI status polls."""
+
+CLASSIFIER_TIMEOUT: int = _env_int("ORCHESTRATOR_CLASSIFIER_TIMEOUT", 120)
+"""Seconds before a headless classifier call is considered timed out."""
+
 
 # ── Caveman prompt (token-saving mode for headless agents) ────────────
 

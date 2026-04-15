@@ -9,7 +9,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from lib.config import ECOSYSTEM_CONTEXT, REPO_BY_NAME, ProjectPaths
+from lib.config import CLASSIFIER_TIMEOUT, ECOSYSTEM_CONTEXT, REPO_BY_NAME, ProjectPaths
 
 
 # ── Data types ────────────────────────────────────────────────────────
@@ -150,7 +150,7 @@ any-llm, gateway, any-llm-rust, any-llm-go, any-llm-ts, any-llm-platform
 """
 
 
-_CLASSIFIER_TIMEOUT = 120  # seconds -- classifiers are quick, catch hangs
+_CLASSIFIER_TIMEOUT = CLASSIFIER_TIMEOUT
 
 
 def classify(input_text: str, paths: ProjectPaths) -> TriageResult:

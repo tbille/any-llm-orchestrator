@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from lib.config import ProjectPaths
+from lib.config import CLASSIFIER_TIMEOUT, ProjectPaths
 from lib.intake import _extract_reply
 
 
@@ -133,7 +133,7 @@ Respond with ONLY a JSON object:
 """
 
 
-_DESIGN_CLASSIFIER_TIMEOUT = 120  # seconds
+_DESIGN_CLASSIFIER_TIMEOUT = CLASSIFIER_TIMEOUT
 
 
 def classify_design_need(slug: str, paths: ProjectPaths) -> bool:

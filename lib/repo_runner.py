@@ -19,7 +19,15 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.config import CAVEMAN_PROMPT, REPO_BY_NAME, ProjectPaths, get_project_paths
+from lib.config import (
+    CAVEMAN_PROMPT,
+    CI_POLL_INTERVAL,
+    MAX_CI_FIX_ROUNDS,
+    MAX_REVIEW_ROUNDS,
+    REPO_BY_NAME,
+    ProjectPaths,
+    get_project_paths,
+)
 from lib.status import update_repo_step
 
 
@@ -424,8 +432,8 @@ def step_ci_watch(
     repo_name: str,
     paths: ProjectPaths,
     *,
-    max_fix_rounds: int = 2,
-    poll_interval: int = 30,
+    max_fix_rounds: int = MAX_CI_FIX_ROUNDS,
+    poll_interval: int = CI_POLL_INTERVAL,
 ) -> None:
     """Poll CI and fix failures."""
     from lib.pr import _get_ci_status, _collect_ci_failure_logs
@@ -904,7 +912,7 @@ def run_repo_pipeline(
     slug: str,
     repo_name: str,
     *,
-    max_review_rounds: int = 2,
+    max_review_rounds: int = MAX_REVIEW_ROUNDS,
 ) -> None:
     """Run the full build pipeline for a single repo."""
     paths = get_project_paths()
