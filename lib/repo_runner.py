@@ -847,7 +847,7 @@ def run_fix_pr_pipeline(
     """Run the fix-PR pipeline for a single repo.
 
     Called from a tmux pane by the dashboard or CLI. Sequences:
-    fetch PR feedback -> engineer fix -> push -> done.
+    fetch PR feedback -> engineer fix -> push -> CI watch -> done.
     """
     paths = get_project_paths()
 
@@ -857,7 +857,13 @@ def run_fix_pr_pipeline(
 
     step_fix_pr(slug, repo_name, paths)
 
+    # Watch CI after pushing PR fixes, consistent with cross-review-fix.
+    print(f"\n  [{repo_name}] -> ci-watch (post PR fix)")
+    update_repo_step(slug, repo_name, "pr-fix-ci", paths)
+    step_ci_watch(slug, repo_name, paths)
+
     print(f"\n  [{repo_name}] Fix-PR pipeline complete.")
+    update_repo_step(slug, repo_name, "done", paths)
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────
