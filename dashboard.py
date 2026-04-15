@@ -218,6 +218,9 @@ DASHBOARD_HTML = """\
                  background: rgba(88,166,255,0.12); color: var(--accent); border: 1px solid rgba(88,166,255,0.3);
                  font-weight: 500; margin-left: 8px; transition: background 0.15s; }
    .action-btn:hover { background: rgba(88,166,255,0.25); }
+   .action-btn.btn-stop { background: rgba(248,81,73,0.12); color: var(--red);
+                           border-color: rgba(248,81,73,0.3); }
+   .action-btn.btn-stop:hover { background: rgba(248,81,73,0.25); }
 </style>
 </head>
 <body>
@@ -308,6 +311,22 @@ async function fixPRs(slug) {
   } catch (e) {
     alert("Fix PRs request failed: " + e);
     if (btn) { btn.disabled = false; btn.textContent = "Fix PRs"; }
+  }
+}
+
+async function stopFixPRs(slug) {
+  try {
+    const res = await fetch("/api/stop-fix-prs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slug: slug }),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      alert("Stop failed: " + (data.error || "Unknown error"));
+    }
+  } catch (e) {
+    alert("Stop request failed: " + e);
   }
 }
 
@@ -504,13 +523,18 @@ function render(data) {
 
     // Fix PRs button: show when build phase is running or done.
     // Always the same state — reviewers can add comments at any time.
+    // Stop button appears alongside when a fix-pr tmux session is active.
     const buildPhase = (f.phases && f.phases.build) || {};
     const showFixBtn = buildPhase.status === "running" || buildPhase.status === "done";
+    const fixPrRunning = (f.tmux_sessions || []).some(s => s.startsWith("fix-pr-"));
     let fixBtnHtml = "";
     if (showFixBtn) {
-      const btnId = "fix-pr-btn-" + f.slug;
-      const onclickAttr = "fixPRs(&apos;" + f.slug + "&apos;)";
-      fixBtnHtml = '<button id="' + btnId + '" class="action-btn" onclick="' + onclickAttr + '">Fix PRs</button>';
+      const onclickFix = "fixPRs(&apos;" + f.slug + "&apos;)";
+      fixBtnHtml = '<button class="action-btn" onclick="' + onclickFix + '">Fix PRs</button>';
+      if (fixPrRunning) {
+        const onclickStop = "stopFixPRs(&apos;" + f.slug + "&apos;)";
+        fixBtnHtml += '<button class="action-btn btn-stop" onclick="' + onclickStop + '">Stop Fixing</button>';
+      }
     }
 
     return '<div class="card">' +
@@ -565,6 +589,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         if self.path == "/api/fix-prs":
             self._handle_fix_prs()
+        elif self.path == "/api/stop-fix-prs":
+            self._handle_stop_fix_prs()
         else:
             self.send_error(404)
 
@@ -614,6 +640,44 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._json_response_with_status(
             202, {"status": "started", "slug": slug, "repos": repos}
         )
+
+    def _handle_stop_fix_prs(self) -> None:
+        """Kill the fix-pr tmux session for a feature."""
+        import json as _json
+        import subprocess
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length else b""
+        try:
+            payload = _json.loads(body) if body else {}
+        except _json.JSONDecodeError:
+            self._json_response_with_status(400, {"error": "Invalid JSON"})
+            return
+
+        slug = payload.get("slug", "")
+        if not slug:
+            self._json_response_with_status(400, {"error": "Missing 'slug' field"})
+            return
+
+        session_name = f"fix-pr-{slug}"
+        result = subprocess.run(
+            ["tmux", "kill-session", "-t", session_name],
+            capture_output=True,
+        )
+
+        # Invalidate cache so the tmux badge disappears on the next poll.
+        global _cache, _cache_ts
+        with _cache_lock:
+            _cache = {}
+            _cache_ts = 0.0
+
+        if result.returncode != 0:
+            self._json_response_with_status(
+                404, {"error": f"No active fix-pr session for '{slug}'"}
+            )
+            return
+
+        self._json_response_with_status(200, {"status": "stopped", "slug": slug})
 
     def _json_response(self, data: dict) -> None:
         self._json_response_with_status(200, data)
