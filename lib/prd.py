@@ -145,13 +145,18 @@ def classify_design_need(slug: str, paths: ProjectPaths) -> bool:
     prd_content = prd_file.read_text(encoding="utf-8")
     prompt = _DESIGN_CLASSIFIER_PROMPT.format(prd_content=prd_content)
 
+    # Scope to the spec directory -- this classifier only needs the PRD
+    # content (which is already inlined in the prompt), not project-wide
+    # file access.
+    spec_dir = paths.spec_dir(slug)
+
     try:
         result = subprocess.run(
             [
                 "opencode",
                 "run",
                 "--dir",
-                str(paths.root),
+                str(spec_dir),
                 "--dangerously-skip-permissions",
                 "--format",
                 "json",
