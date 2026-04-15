@@ -171,6 +171,10 @@ def _build_engineer_command(
     if review_file and review_file.exists():
         file_args += ["-f", str(review_file)]
 
+    scope_note = ""
+    if repo_info and repo_info.scope_notes:
+        scope_note = f" SCOPE NOTE: {repo_info.scope_notes}"
+
     commit_instructions = (
         " As you implement, commit your work in small, atomic commits. "
         "Each commit should be a single logical change (one concept per "
@@ -188,14 +192,14 @@ def _build_engineer_command(
         message = (
             f"Review the code review feedback in the attached review file and "
             f"fix the issues found. This is a {lang} project."
-            f"{commit_instructions}"
+            f"{scope_note}{commit_instructions}"
         )
     else:
         message = (
             f"Implement the feature described in the attached spec for this "
             f"{lang} project. Follow the repository's existing patterns and "
             f"conventions. Write tests for your changes."
-            f"{commit_instructions}"
+            f"{scope_note}{commit_instructions}"
         )
 
     # For simple-bug path (no spec file), use the input directly.
@@ -206,7 +210,7 @@ def _build_engineer_command(
         message = (
             f"Fix the bug described in the attached issue for this {lang} project. "
             f"Follow the repository's existing patterns."
-            f"{commit_instructions}"
+            f"{scope_note}{commit_instructions}"
         )
 
     # Write the prompt to a file to avoid shell escaping issues with

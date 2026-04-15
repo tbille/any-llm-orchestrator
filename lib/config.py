@@ -14,6 +14,8 @@ class RepoInfo:
     github_url: str
     language: str
     description: str
+    default_branch: str = "main"
+    scope_notes: str = ""
 
     @property
     def github_slug(self) -> str:
@@ -31,6 +33,13 @@ REPOS: tuple[RepoInfo, ...] = (
         description=(
             "Python SDK providing a common interface for LLM calls. "
             "Supports direct provider calls and gateway communication."
+        ),
+        scope_notes=(
+            "This repo contains a gateway provider (client code for talking "
+            "to the gateway). That provider code IS in scope. However, the "
+            "gateway server code has moved to the standalone 'gateway' "
+            "repository -- do NOT add or modify gateway server code in this "
+            "repo. Only the gateway provider/client code lives here."
         ),
     ),
     RepoInfo(
@@ -68,6 +77,7 @@ REPOS: tuple[RepoInfo, ...] = (
             "Managed platform for budgets, users, and observability. "
             "Pulls observability data from the gateway."
         ),
+        default_branch="develop",
     ),
 )
 

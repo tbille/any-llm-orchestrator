@@ -50,11 +50,16 @@ def run_architect(
     print("  Collaborate on the tech spec, then exit.")
     print("────────────────────────────────────────────────────\n")
 
-    repo_descriptions = "\n".join(
-        f"- **{name}** ({REPO_BY_NAME[name].language}): {REPO_BY_NAME[name].description}"
-        for name in repo_names
-        if name in REPO_BY_NAME
-    )
+    repo_lines: list[str] = []
+    for name in repo_names:
+        if name not in REPO_BY_NAME:
+            continue
+        info = REPO_BY_NAME[name]
+        line = f"- **{name}** ({info.language}): {info.description}"
+        if info.scope_notes:
+            line += f"\n  - **Scope note:** {info.scope_notes}"
+        repo_lines.append(line)
+    repo_descriptions = "\n".join(repo_lines)
 
     if light:
         task_instruction = (
