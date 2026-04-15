@@ -328,7 +328,15 @@ def get_live_tmux_sessions() -> dict[str, list[str]]:
     for line in result.stdout.strip().splitlines():
         name = line.strip()
         # Parse prefix-slug pattern.
-        for prefix in ("xfix-", "build-", "eng-", "review-", "pr-", "ci-fix-"):
+        for prefix in (
+            "fix-pr-",
+            "xfix-",
+            "build-",
+            "eng-",
+            "review-",
+            "pr-",
+            "ci-fix-",
+        ):
             if name.startswith(prefix):
                 slug = name[len(prefix) :]
                 # Handle suffixes like "-fix".

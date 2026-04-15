@@ -340,8 +340,8 @@ def _run_ci_check(args: argparse.Namespace) -> None:
 
 
 def _run_fix_pr(args: argparse.Namespace) -> None:
-    """Fetch PR comments and send engineer to fix."""
-    from lib.repo_runner import step_fix_pr
+    """Fetch PR comments and send engineer to fix (parallel via tmux)."""
+    from lib.engineer import run_fix_pr_pipelines
 
     paths = get_project_paths()
     triage = load_triage(args.resume, paths)
@@ -360,17 +360,7 @@ def _run_fix_pr(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    print(f"\n── Fix PR Feedback ─────────────────────────────────")
-    print(f"  Slug:  {slug}")
-    print(f"  Repos: {', '.join(repos)}")
-    print("────────────────────────────────────────────────────\n")
-
-    for name in repos:
-        wt_path = paths.worktree_path(slug, name)
-        if not wt_path.exists():
-            print(f"  [{name}] No worktree found, skipping.")
-            continue
-        step_fix_pr(slug, name, paths)
+    run_fix_pr_pipelines(slug, repos, paths, attach=True)
 
     print(f"\n  Done. To re-check CI:")
     print(f"  uv run orchestrate.py --resume {slug} --ci-check\n")

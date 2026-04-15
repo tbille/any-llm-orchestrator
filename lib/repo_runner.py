@@ -289,7 +289,16 @@ def step_ci_watch(
 
 
 def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
-    """Fetch PR review comments and send the engineer to address them."""
+    """Fetch PR review comments and send the engineer to address them.
+
+    Collects **all** feedback on the PR:
+    - Top-level review bodies (approve / request-changes summaries)
+    - General conversation comments
+    - Inline review comments on specific files and lines (via the REST API)
+    - The overall review decision
+    """
+    import json as _json
+
     update_repo_step(slug, repo_name, "fix-pr", paths)
     wt_path = paths.worktree_path(slug, repo_name)
     repo_info = REPO_BY_NAME.get(repo_name)
@@ -297,7 +306,7 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
     log_file = paths.logs_dir(slug) / f"{repo_name}-pr-fix.log"
     feedback_file = paths.spec_file(slug, f"{repo_name}-pr-feedback.md")
 
-    # Fetch PR comments and reviews via gh.
+    # ── 1. Fetch PR metadata, reviews, and general comments ───────────
     print(f"  [{repo_name}] Fetching PR review comments...")
     pr_data = subprocess.run(
         [
@@ -305,7 +314,7 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
             "pr",
             "view",
             "--json",
-            "title,url,reviews,comments",
+            "title,url,number,reviews,comments",
         ],
         cwd=str(wt_path),
         capture_output=True,
@@ -318,8 +327,6 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
         update_repo_step(slug, repo_name, "done", paths)
         return
 
-    import json as _json
-
     try:
         data = _json.loads(pr_data.stdout)
     except _json.JSONDecodeError:
@@ -327,8 +334,8 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
         update_repo_step(slug, repo_name, "done", paths)
         return
 
-    # Also fetch inline review comments.
-    review_comments = subprocess.run(
+    # ── 2. Fetch review decision ──────────────────────────────────────
+    decision_result = subprocess.run(
         [
             "gh",
             "pr",
@@ -342,8 +349,36 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
         capture_output=True,
         text=True,
     )
+    review_decision = (
+        decision_result.stdout.strip() if decision_result.returncode == 0 else ""
+    )
 
-    # Build feedback markdown.
+    # ── 3. Fetch inline review comments (file/line-level) ────────────
+    #    These are NOT included in `gh pr view --json reviews`.
+    #    Use the REST API: GET /repos/{owner}/{repo}/pulls/{number}/comments
+    pr_number = data.get("number")
+    inline_comments: list[dict] = []
+    if pr_number:
+        inline_result = subprocess.run(
+            [
+                "gh",
+                "api",
+                "--paginate",
+                "repos/{owner}/{repo}/pulls/" + str(pr_number) + "/comments",
+            ],
+            cwd=str(wt_path),
+            capture_output=True,
+            text=True,
+        )
+        if inline_result.returncode == 0 and inline_result.stdout.strip():
+            try:
+                inline_comments = _json.loads(inline_result.stdout)
+                if not isinstance(inline_comments, list):
+                    inline_comments = []
+            except _json.JSONDecodeError:
+                inline_comments = []
+
+    # ── 4. Build feedback markdown ────────────────────────────────────
     lines = [
         f"# PR Review Feedback: {repo_name}",
         f"",
@@ -352,6 +387,11 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
         f"",
     ]
 
+    if review_decision:
+        lines.append(f"**Review Decision:** {review_decision}")
+        lines.append("")
+
+    # Top-level review bodies (approve / changes-requested summaries).
     reviews = data.get("reviews") or []
     if reviews:
         lines.append("## Reviews")
@@ -362,10 +402,40 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
             body = review.get("body", "").strip()
             lines.append(f"### @{author} ({state})")
             if body:
-                lines.append(f"")
+                lines.append("")
                 lines.append(body)
             lines.append("")
 
+    # Inline review comments (file/line-level code feedback).
+    if inline_comments:
+        lines.append("## Inline Code Comments")
+        lines.append("")
+        lines.append(
+            "These are comments left on specific files and lines. Address each one."
+        )
+        lines.append("")
+        for ic in inline_comments:
+            author = ic.get("user", {}).get("login", "unknown")
+            file_path = ic.get("path", "unknown")
+            line = ic.get("original_line") or ic.get("line") or "?"
+            body = ic.get("body", "").strip()
+            diff_hunk = ic.get("diff_hunk", "").strip()
+            if not body:
+                continue
+            lines.append(f"### `{file_path}` (line {line}) — @{author}")
+            if diff_hunk:
+                lines.append("")
+                lines.append("```diff")
+                # Show only the last few lines of the hunk for context.
+                hunk_lines = diff_hunk.splitlines()
+                for hl in hunk_lines[-8:]:
+                    lines.append(hl)
+                lines.append("```")
+            lines.append("")
+            lines.append(body)
+            lines.append("")
+
+    # General conversation comments (not attached to specific lines).
     comments = data.get("comments") or []
     if comments:
         lines.append("## General Comments")
@@ -377,27 +447,33 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
                 lines.append(f"**@{author}:** {body}")
                 lines.append("")
 
-    if review_comments.returncode == 0 and review_comments.stdout.strip():
-        lines.append(f"## Review Decision: {review_comments.stdout.strip()}")
-        lines.append("")
-
     feedback_content = "\n".join(lines)
     feedback_file.write_text(feedback_content, encoding="utf-8")
-    print(f"  [{repo_name}] Feedback saved to: {feedback_file}")
 
-    if not reviews and not comments:
+    has_feedback = reviews or inline_comments or comments
+    print(
+        f"  [{repo_name}] Feedback saved: "
+        f"{len(reviews)} reviews, "
+        f"{len(inline_comments)} inline comments, "
+        f"{len(comments)} general comments"
+    )
+
+    if not has_feedback:
         print(f"  [{repo_name}] No review comments found on the PR.")
         update_repo_step(slug, repo_name, "done", paths)
         return
 
-    # Send engineer to fix.
+    # ── 5. Send engineer to fix ───────────────────────────────────────
     test_note = ""
     if repo_info and repo_info.test_hints:
         test_note = f" TESTING: {repo_info.test_hints}"
 
     message = (
-        f"Address the PR review feedback in the attached file for this {lang} project. "
-        f"Read each comment carefully and make the requested changes. "
+        f"Address ALL the PR review feedback in the attached file for this {lang} project. "
+        f"Read each review comment AND each inline code comment carefully and "
+        f"make the requested changes. Pay special attention to the inline code "
+        f"comments in the 'Inline Code Comments' section — these point to "
+        f"specific files and lines that need changes. "
         f"Commit your fixes in atomic commits."
         f"{test_note}"
     )
@@ -494,6 +570,29 @@ def run_cross_review_fix_pipeline(
     update_repo_step(slug, repo_name, "xfix-done", paths)
 
 
+# ── Fix PR pipeline (single repo, run from tmux pane) ─────────────────
+
+
+def run_fix_pr_pipeline(
+    slug: str,
+    repo_name: str,
+) -> None:
+    """Run the fix-PR pipeline for a single repo.
+
+    Called from a tmux pane by the dashboard or CLI. Sequences:
+    fetch PR feedback -> engineer fix -> push -> done.
+    """
+    paths = get_project_paths()
+
+    print(f"\n{'=' * 50}")
+    print(f"  [{repo_name}] Starting fix-PR pipeline")
+    print(f"{'=' * 50}\n")
+
+    step_fix_pr(slug, repo_name, paths)
+
+    print(f"\n  [{repo_name}] Fix-PR pipeline complete.")
+
+
 # ── Main pipeline ─────────────────────────────────────────────────────
 
 
@@ -545,13 +644,16 @@ def run_repo_pipeline(
 
 # ── CLI entry point ───────────────────────────────────────────────────
 if __name__ == "__main__":
-    if len(sys.argv) >= 4 and sys.argv[3] == "--fix-cross-review":
+    flag = sys.argv[3] if len(sys.argv) >= 4 else None
+    if flag == "--fix-cross-review":
         run_cross_review_fix_pipeline(sys.argv[1], sys.argv[2])
+    elif flag == "--fix-pr":
+        run_fix_pr_pipeline(sys.argv[1], sys.argv[2])
     elif len(sys.argv) == 3:
         run_repo_pipeline(sys.argv[1], sys.argv[2])
     else:
         print(
-            f"Usage: {sys.argv[0]} <slug> <repo-name> [--fix-cross-review]",
+            f"Usage: {sys.argv[0]} <slug> <repo-name> [--fix-cross-review|--fix-pr]",
             file=sys.stderr,
         )
         sys.exit(1)

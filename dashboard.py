@@ -28,44 +28,6 @@ from lib.status import (
 )
 
 
-# ── Background job tracking ──────────────────────────────────────────
-
-# Tracks running fix-pr jobs: slug -> {"status": "running"|"done"|"failed", "error": "..."}
-_jobs_lock = threading.Lock()
-_jobs: dict[str, dict] = {}
-
-
-def _run_fix_prs_background(slug: str, repos: list[str]) -> None:
-    """Run step_fix_pr for all repos in a background thread."""
-    from lib.repo_runner import step_fix_pr
-
-    paths = get_project_paths()
-    try:
-        for name in repos:
-            wt_path = paths.worktree_path(slug, name)
-            if not wt_path.exists():
-                print(f"  [fix-prs] [{name}] No worktree found, skipping.")
-                continue
-            step_fix_pr(slug, name, paths)
-        with _jobs_lock:
-            _jobs[slug] = {"status": "done"}
-    except Exception as exc:
-        print(f"  [fix-prs] Error fixing PRs for {slug}: {exc}")
-        with _jobs_lock:
-            _jobs[slug] = {"status": "failed", "error": str(exc)}
-    finally:
-        # Invalidate cache so the next poll picks up new status.
-        _invalidate_cache()
-
-
-def _invalidate_cache() -> None:
-    """Reset the API cache so the next poll fetches fresh data."""
-    global _cache, _cache_ts
-    with _cache_lock:
-        _cache = {}
-        _cache_ts = 0.0
-
-
 # ── API ───────────────────────────────────────────────────────────────
 
 
@@ -115,16 +77,11 @@ def _build_api_response() -> dict:
         # Cost data from the opencode DB.
         feat["costs"] = get_feature_costs(slug, paths) or {}
 
-    # Snapshot current job statuses for the frontend.
-    with _jobs_lock:
-        jobs_snapshot = dict(_jobs)
-
     result = {
         "features": features,
         "phase_labels": PHASE_LABELS,
         "phases_by_type": {k: list(v) for k, v in PHASES_BY_TYPE.items()},
         "all_phases": list(ALL_PHASES),
-        "fix_pr_jobs": jobs_snapshot,
     }
 
     with _cache_lock:
@@ -264,10 +221,6 @@ DASHBOARD_HTML = """\
    .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
    .action-btn.btn-running { background: rgba(88,166,255,0.15); color: var(--blue);
                               animation: pulse 2s ease-in-out infinite; }
-   .action-btn.btn-done { background: rgba(63,185,80,0.12); color: var(--green);
-                           border-color: rgba(63,185,80,0.3); }
-   .action-btn.btn-failed { background: rgba(248,81,73,0.12); color: var(--red);
-                              border-color: rgba(248,81,73,0.3); }
 </style>
 </head>
 <body>
@@ -377,8 +330,7 @@ function updateLogToggle() {
 }
 
 function render(data) {
-  const { features, phase_labels, phases_by_type, all_phases, fix_pr_jobs } = data;
-  const jobs = fix_pr_jobs || {};
+  const { features, phase_labels, phases_by_type, all_phases } = data;
   const app = document.getElementById("app");
 
   if (!features.length) {
@@ -556,17 +508,13 @@ function render(data) {
     // Fix PRs button: show when build phase is running or done.
     const buildPhase = (f.phases && f.phases.build) || {};
     const showFixBtn = buildPhase.status === "running" || buildPhase.status === "done";
-    const job = jobs[f.slug] || {};
+    const fixPrRunning = (f.tmux_sessions || []).some(s => s.startsWith("fix-pr-"));
     let fixBtnHtml = "";
     if (showFixBtn) {
       const btnId = "fix-pr-btn-" + f.slug;
       const onclickAttr = "fixPRs(&apos;" + f.slug + "&apos;)";
-      if (job.status === "running") {
+      if (fixPrRunning) {
         fixBtnHtml = '<button id="' + btnId + '" class="action-btn btn-running" disabled>Fixing PRs\u2026</button>';
-      } else if (job.status === "done") {
-        fixBtnHtml = '<button id="' + btnId + '" class="action-btn btn-done" onclick="' + onclickAttr + '">Fix PRs \u2713</button>';
-      } else if (job.status === "failed") {
-        fixBtnHtml = '<button id="' + btnId + '" class="action-btn btn-failed" onclick="' + onclickAttr + '">Fix PRs (retry)</button>';
       } else {
         fixBtnHtml = '<button id="' + btnId + '" class="action-btn" onclick="' + onclickAttr + '">Fix PRs</button>';
       }
@@ -628,7 +576,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def _handle_fix_prs(self) -> None:
-        """Trigger fix-pr for all repos of a feature in a background thread."""
+        """Trigger fix-pr for all repos of a feature via tmux."""
+        from lib.engineer import run_fix_pr_pipelines
+
         import json as _json
 
         # Read request body.
@@ -645,15 +595,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response_with_status(400, {"error": "Missing 'slug' field"})
             return
 
-        # Check if already running.
-        with _jobs_lock:
-            existing = _jobs.get(slug, {})
-            if existing.get("status") == "running":
-                self._json_response_with_status(
-                    409, {"error": "Fix PRs already running for this feature"}
-                )
-                return
-
         # Load feature data to get the repo list.
         paths = get_project_paths()
         status = load_status(slug, paths)
@@ -668,15 +609,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response_with_status(400, {"error": "No repos for this feature"})
             return
 
-        # Mark job as running and launch background thread.
-        with _jobs_lock:
-            _jobs[slug] = {"status": "running"}
+        # Launch tmux session (returns immediately, does not attach).
+        run_fix_pr_pipelines(slug, repos, paths, attach=False)
 
-        _invalidate_cache()
-        t = threading.Thread(
-            target=_run_fix_prs_background, args=(slug, repos), daemon=True
-        )
-        t.start()
+        # Invalidate cache so the tmux badge appears on the next poll.
+        global _cache, _cache_ts
+        with _cache_lock:
+            _cache = {}
+            _cache_ts = 0.0
 
         self._json_response_with_status(
             202, {"status": "started", "slug": slug, "repos": repos}

@@ -155,6 +155,8 @@ CAVEMAN_PROMPT = (
     "Pattern: [thing] [action] [reason]. [next step]. "
     "ACTIVE EVERY RESPONSE. No revert after many turns. No filler drift. "
     "Code/commits/PRs: write normal. "
+    "NEVER create an AGENTS.md file in the repository unless explicitly "
+    "asked to do so. "
 )
 
 

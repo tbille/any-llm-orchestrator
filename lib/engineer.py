@@ -317,7 +317,71 @@ def run_cross_review_fixes(
         _tmux_attach(session_name)
         _tmux_wait_for_all_panes(session_name)
         _tmux_kill_session(session_name)
-        return affected
+    return affected
+
+
+# ── Fix PR comments launcher ─────────────────────────────────────────
+
+
+def run_fix_pr_pipelines(
+    slug: str,
+    repo_names: list[str],
+    paths: ProjectPaths,
+    *,
+    attach: bool = True,
+) -> None:
+    """Launch one tmux pane per repo to fix PR review comments.
+
+    Each pane runs ``repo_runner.py --fix-pr`` which fetches PR comments,
+    sends the engineer to fix them, and pushes.
+
+    When *attach* is False (e.g. triggered from the dashboard), the tmux
+    session is launched but the caller returns immediately.
+    """
+    session_name = f"fix-pr-{slug}"
+
+    if _tmux_session_exists(session_name):
+        if attach:
+            print(f"  [info] tmux session {session_name!r} already exists, attaching.")
+            _tmux_attach(session_name)
+            _tmux_wait_for_all_panes(session_name)
+            _tmux_kill_session(session_name)
+        return
+
+    print("\n── Fix PR Comments (per-repo pipelines) ────────────")
+    print(f"  Session: {session_name}")
+    print(f"  Repos:   {', '.join(repo_names)}")
+    print("  Each repo: fetch comments -> engineer fix -> push")
+    print("────────────────────────────────────────────────────\n")
+
+    paths.logs_dir(slug).mkdir(parents=True, exist_ok=True)
+
+    pane_commands: list[tuple[str, str]] = []
+    for name in repo_names:
+        wt_path = paths.worktree_path(slug, name)
+        if not wt_path.exists():
+            print(f"  [{name}] No worktree found, skipping.")
+            continue
+        cmd = (
+            f"uv run python lib/repo_runner.py"
+            f" {shlex.quote(slug)} {shlex.quote(name)} --fix-pr"
+        )
+        pane_commands.append((cmd, str(paths.root)))
+
+    if not pane_commands:
+        print("  [skip] No repos with worktrees to fix.")
+        return
+
+    _tmux_launch_panes(session_name, pane_commands)
+
+    if attach:
+        print("  Attaching to tmux session. Use Ctrl-B D to detach.\n")
+        _tmux_attach(session_name)
+
+        print("  Waiting for all fix-PR pipelines to finish...")
+        _tmux_wait_for_all_panes(session_name)
+        _tmux_kill_session(session_name)
+        print("  All fix-PR pipelines done.\n")
 
     print("\n── Cross-Review Fix (per-repo pipelines) ───────────")
     print(f"  Session: {session_name}")
