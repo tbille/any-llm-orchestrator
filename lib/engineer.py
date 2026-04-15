@@ -1,15 +1,13 @@
-"""Phase 6-7: Engineer agents (tmux) and code review loop."""
+"""Build pipeline launcher and cross-repo review."""
 
 from __future__ import annotations
 
-import os
 import shlex
 import subprocess
-import sys
 import time
 from pathlib import Path
 
-from lib.config import CAVEMAN_PROMPT, REPO_BY_NAME, ProjectPaths
+from lib.config import CAVEMAN_PROMPT, ProjectPaths
 
 
 # ── Tmux helpers ──────────────────────────────────────────────────────
@@ -31,20 +29,14 @@ def _tmux_launch_panes(
 ) -> None:
     """Create a tmux session and run commands in parallel panes.
 
-    Args:
-        session: Tmux session name.
-        commands: List of (shell_command, working_directory) tuples.
-
     Each pane uses ``remain-on-exit on`` so that when the command
-    finishes, the pane stays visible with ``pane_dead=1``.  This lets
-    ``_tmux_wait_for_all_panes`` detect completion reliably.
+    finishes, the pane stays visible with ``pane_dead=1``.
     """
     if not commands:
         return
 
     first_cmd, first_cwd = commands[0]
 
-    # Create the session with /bin/sh to avoid zsh startup side-effects.
     subprocess.run(
         [
             TMUX,
@@ -63,19 +55,16 @@ def _tmux_launch_panes(
         check=True,
     )
 
-    # Enable remain-on-exit so panes become dead=1 instead of closing.
     subprocess.run(
         [TMUX, "set-option", "-t", session, "remain-on-exit", "on"],
         check=True,
     )
 
-    # Send the first command to pane 0.
     subprocess.run(
         [TMUX, "send-keys", "-t", f"{session}:0.0", f"{first_cmd}; exit", "Enter"],
         check=True,
     )
 
-    # Create additional panes for the remaining commands.
     for cmd, cwd in commands[1:]:
         subprocess.run(
             [TMUX, "split-window", "-t", session, "-c", cwd, "/bin/sh"],
@@ -86,9 +75,6 @@ def _tmux_launch_panes(
             check=True,
         )
 
-    # Tile all panes evenly ONCE after all splits are done.
-    # Note: calling select-layout after each split with remain-on-exit
-    # causes tmux to create phantom panes -- so we tile only at the end.
     if len(commands) > 1:
         subprocess.run(
             [TMUX, "select-layout", "-t", session, "tiled"],
@@ -104,28 +90,17 @@ def _tmux_attach(session: str) -> None:
 def _tmux_wait_for_all_panes(
     session: str,
     poll_interval: float = 10.0,
-    timeout: float = 7200.0,
+    timeout: float = 14400.0,
 ) -> bool:
-    """Block until all panes in the session have finished their commands.
-
-    Returns True if all panes finished, False on timeout.
-    """
+    """Block until all panes have finished. Returns True if all done."""
     elapsed = 0.0
     while elapsed < timeout:
         result = subprocess.run(
-            [
-                TMUX,
-                "list-panes",
-                "-t",
-                session,
-                "-F",
-                "#{pane_dead}",
-            ],
+            [TMUX, "list-panes", "-t", session, "-F", "#{pane_dead}"],
             capture_output=True,
             text=True,
         )
         if result.returncode != 0:
-            # Session was killed externally.
             return True
 
         statuses = result.stdout.strip().splitlines()
@@ -147,241 +122,66 @@ def _tmux_kill_session(session: str) -> None:
     )
 
 
-# ── Phase 6: Engineers ────────────────────────────────────────────────
+# ── Build pipeline launcher ──────────────────────────────────────────
 
 
-def _build_engineer_command(
-    slug: str,
-    repo_name: str,
-    paths: ProjectPaths,
-    *,
-    is_fix_round: bool = False,
-    review_file: Path | None = None,
-) -> str:
-    """Build the opencode run command for an engineer agent."""
-    wt_path = paths.worktree_path(slug, repo_name)
-    spec_file = paths.spec_file(slug, f"{repo_name}-spec.md")
-    log_file = paths.logs_dir(slug) / f"{repo_name}-engineer.log"
-    repo_info = REPO_BY_NAME.get(repo_name)
-    lang = repo_info.language if repo_info else "unknown"
-
-    file_args: list[str] = []
-    if spec_file.exists():
-        file_args += ["-f", str(spec_file)]
-    if review_file and review_file.exists():
-        file_args += ["-f", str(review_file)]
-
-    scope_note = ""
-    if repo_info and repo_info.scope_notes:
-        scope_note = f" SCOPE NOTE: {repo_info.scope_notes}"
-
-    commit_instructions = (
-        " As you implement, commit your work in small, atomic commits. "
-        "Each commit should be a single logical change (one concept per "
-        "commit) with a clear, descriptive message in imperative mood. "
-        "Good examples: 'Add BatchRequest and BatchResponse types', "
-        "'Implement batch endpoint handler', 'Add unit tests for batch "
-        "processing'. Bad: one giant 'implement feature' commit. "
-        "Run the project linter and test suite regularly. Look at the "
-        "project config files (pyproject.toml, Cargo.toml, package.json, "
-        "Makefile, etc.) to find the correct lint and test commands. "
-        "Make sure lint and tests pass before your final commit."
-    )
-
-    if is_fix_round and review_file:
-        message = (
-            f"Review the code review feedback in the attached review file and "
-            f"fix the issues found. This is a {lang} project."
-            f"{scope_note}{commit_instructions}"
-        )
-    else:
-        message = (
-            f"Implement the feature described in the attached spec for this "
-            f"{lang} project. Follow the repository's existing patterns and "
-            f"conventions. Write tests for your changes."
-            f"{scope_note}{commit_instructions}"
-        )
-
-    # For simple-bug path (no spec file), use the input directly.
-    if not spec_file.exists():
-        input_file = paths.spec_file(slug, "input.md")
-        if input_file.exists():
-            file_args += ["-f", str(input_file)]
-        message = (
-            f"Fix the bug described in the attached issue for this {lang} project. "
-            f"Follow the repository's existing patterns."
-            f"{scope_note}{commit_instructions}"
-        )
-
-    # Write the prompt to a file to avoid shell escaping issues with
-    # multi-line strings passed through tmux.
-    prompt_file = paths.logs_dir(slug) / f"{repo_name}-engineer-prompt.md"
-    prompt_file.parent.mkdir(parents=True, exist_ok=True)
-    prompt_file.write_text(CAVEMAN_PROMPT + message, encoding="utf-8")
-
-    parts = [
-        "opencode",
-        "run",
-        "--dir",
-        shlex.quote(str(wt_path)),
-        "--dangerously-skip-permissions",
-    ]
-    parts += file_args
-    # Pass prompt via file to avoid shell quoting issues in tmux.
-    parts += ["-f", shlex.quote(str(prompt_file))]
-    # "--" separates flags from the positional message so opencode
-    # doesn't try to resolve the message text as a file path.
-    parts += ["--", shlex.quote("Follow the instructions in the attached prompt file.")]
-
-    # Wrap in a shell command that tees output to a log file.
-    cmd = " ".join(parts)
-    return f'{cmd} 2>&1 | tee {shlex.quote(str(log_file))}; echo "[DONE: {repo_name}]"'
-
-
-def run_engineers(
+def run_build_pipelines(
     slug: str,
     repo_names: list[str],
     paths: ProjectPaths,
-    *,
-    is_fix_round: bool = False,
 ) -> None:
-    """Launch one opencode engineer per repo in tmux panes.
+    """Launch one tmux pane per repo, each running the full build pipeline.
 
-    Args:
-        is_fix_round: If True, engineers address code review feedback.
+    Each pane runs ``repo_runner.py`` which sequences:
+    engineer -> review -> fix loop -> PR -> CI watch -> done.
     """
-    suffix = "-fix" if is_fix_round else ""
-    session_name = f"eng-{slug}{suffix}"
+    session_name = f"build-{slug}"
 
     if _tmux_session_exists(session_name):
         print(f"  [info] tmux session {session_name!r} already exists, attaching.")
         _tmux_attach(session_name)
+        _tmux_wait_for_all_panes(session_name)
+        _tmux_kill_session(session_name)
         return
 
-    print(f"\n── Phase 6: Engineers {'(fix round)' if is_fix_round else ''} ─────")
+    print(f"\n── Build (per-repo pipelines) ───────────────────────")
     print(f"  Session: {session_name}")
     print(f"  Repos:   {', '.join(repo_names)}")
+    print(f"  Each repo: engineer -> review -> PR -> CI")
     print("────────────────────────────────────────────────────\n")
 
     paths.logs_dir(slug).mkdir(parents=True, exist_ok=True)
 
     pane_commands: list[tuple[str, str]] = []
     for name in repo_names:
-        review_file = (
-            paths.spec_file(slug, f"{name}-review.md") if is_fix_round else None
-        )
-        cmd = _build_engineer_command(
-            slug,
-            name,
-            paths,
-            is_fix_round=is_fix_round,
-            review_file=review_file,
-        )
         wt_path = str(paths.worktree_path(slug, name))
-        pane_commands.append((cmd, wt_path))
+        # Run repo_runner.py from the project root so imports work.
+        cmd = (
+            f"uv run python lib/repo_runner.py {shlex.quote(slug)} {shlex.quote(name)}"
+        )
+        pane_commands.append((cmd, str(paths.root)))
 
     _tmux_launch_panes(session_name, pane_commands)
 
-    print(f"  Attaching to tmux session. Use Ctrl-B D to detach.\n")
+    print("  Attaching to tmux session. Use Ctrl-B D to detach.\n")
     _tmux_attach(session_name)
 
-    # After user detaches (or all panes finish), wait for completion.
-    print("  Waiting for all engineer agents to finish...")
+    print("  Waiting for all repo pipelines to finish...")
     _tmux_wait_for_all_panes(session_name)
     _tmux_kill_session(session_name)
-    print("  All engineers done.\n")
+    print("  All repo pipelines done.\n")
 
 
-# ── Phase 7a: Per-repo code review ───────────────────────────────────
-
-
-def _build_review_command(
-    slug: str,
-    repo_name: str,
-    paths: ProjectPaths,
-) -> str:
-    """Build the opencode run command for a code reviewer agent."""
-    wt_path = paths.worktree_path(slug, repo_name)
-    spec_file = paths.spec_file(slug, f"{repo_name}-spec.md")
-    review_file = paths.spec_file(slug, f"{repo_name}-review.md")
-    log_file = paths.logs_dir(slug) / f"{repo_name}-review.log"
-    repo_info = REPO_BY_NAME.get(repo_name)
-    lang = repo_info.language if repo_info else "unknown"
-
-    file_args: list[str] = []
-    if spec_file.exists():
-        file_args += ["-f", str(spec_file)]
-
-    message = (
-        f"Review the code changes in this {lang} repository. "
-        f"Compare against the attached spec. Check for: "
-        f"spec compliance, code quality and {lang}-idiomatic patterns, "
-        f"test coverage, error handling, backwards compatibility. "
-        f"Write your review to: {review_file} "
-        f"Use this format: "
-        f"## Status: PASS or NEEDS_CHANGES "
-        f"## Issues Found (list each issue) "
-        f"## Recommendations (list improvements)"
-    )
-
-    prompt_file = paths.logs_dir(slug) / f"{repo_name}-review-prompt.md"
-    prompt_file.parent.mkdir(parents=True, exist_ok=True)
-    prompt_file.write_text(CAVEMAN_PROMPT + message, encoding="utf-8")
-
-    parts = [
-        "opencode",
-        "run",
-        "--dir",
-        shlex.quote(str(wt_path)),
-        "--dangerously-skip-permissions",
-    ]
-    parts += file_args
-    parts += ["-f", shlex.quote(str(prompt_file))]
-    parts += ["--", shlex.quote("Follow the instructions in the attached prompt file.")]
-
-    cmd = " ".join(parts)
-    return f'{cmd} 2>&1 | tee {shlex.quote(str(log_file))}; echo "[REVIEW DONE: {repo_name}]"'
-
-
-def run_code_reviews(slug: str, repo_names: list[str], paths: ProjectPaths) -> None:
-    """Launch per-repo code reviewers in tmux panes."""
-    session_name = f"review-{slug}"
-
-    if _tmux_session_exists(session_name):
-        print(f"  [info] tmux session {session_name!r} already exists, attaching.")
-        _tmux_attach(session_name)
-        return
-
-    print(f"\n── Phase 7a: Per-repo Code Review ──────────────────")
-    print(f"  Session: {session_name}")
-    print(f"  Repos:   {', '.join(repo_names)}")
-    print("────────────────────────────────────────────────────\n")
-
-    pane_commands: list[tuple[str, str]] = []
-    for name in repo_names:
-        cmd = _build_review_command(slug, name, paths)
-        wt_path = str(paths.worktree_path(slug, name))
-        pane_commands.append((cmd, wt_path))
-
-    _tmux_launch_panes(session_name, pane_commands)
-
-    print(f"  Attaching to tmux session. Use Ctrl-B D to detach.\n")
-    _tmux_attach(session_name)
-
-    print("  Waiting for all reviewers to finish...")
-    _tmux_wait_for_all_panes(session_name)
-    _tmux_kill_session(session_name)
-    print("  All reviews done.\n")
-
-
-# ── Phase 7b: Cross-repo consistency review ──────────────────────────
+# ── Cross-repo consistency review ────────────────────────────────────
 
 
 def run_cross_repo_review(
-    slug: str, repo_names: list[str], paths: ProjectPaths
+    slug: str,
+    repo_names: list[str],
+    paths: ProjectPaths,
 ) -> None:
     """Single headless agent that checks cross-repo interface alignment."""
-    print("\n── Phase 7b: Cross-repo Consistency Review ─────────")
+    print("\n── Cross-repo Consistency Review ───────────────────")
 
     tech_spec = paths.spec_file(slug, "tech-spec.md")
     cross_review_file = paths.spec_file(slug, "cross-review.md")
@@ -390,7 +190,6 @@ def run_cross_repo_review(
     if tech_spec.exists():
         file_args += ["-f", str(tech_spec)]
 
-    # Collect diffs from each worktree.
     diff_sections: list[str] = []
     for name in repo_names:
         wt_path = paths.worktree_path(slug, name)
@@ -405,7 +204,6 @@ def run_cross_repo_review(
         if result.stdout.strip():
             diff_sections.append(f"### {name}\n```\n{result.stdout.strip()}\n```")
 
-        # Also attach per-repo review files.
         review = paths.spec_file(slug, f"{name}-review.md")
         if review.exists():
             file_args += ["-f", str(review)]
@@ -434,63 +232,10 @@ def run_cross_repo_review(
             str(paths.root),
             "--dangerously-skip-permissions",
             *file_args,
+            "--",
             message,
         ],
         cwd=str(paths.root),
     )
 
     print("  Cross-repo review complete.\n")
-
-
-# ── Review loop ───────────────────────────────────────────────────────
-
-
-def _any_repo_needs_changes(
-    slug: str, repo_names: list[str], paths: ProjectPaths
-) -> list[str]:
-    """Check per-repo review files and return repos that need fixes."""
-    needs_fix: list[str] = []
-    for name in repo_names:
-        review_file = paths.spec_file(slug, f"{name}-review.md")
-        if not review_file.exists():
-            continue
-        content = review_file.read_text(encoding="utf-8").upper()
-        if "NEEDS_CHANGES" in content:
-            needs_fix.append(name)
-    return needs_fix
-
-
-def run_review_loop(
-    slug: str,
-    repo_names: list[str],
-    paths: ProjectPaths,
-    *,
-    max_rounds: int = 2,
-) -> None:
-    """Orchestrate: engineer -> review -> fix -> review ... up to max_rounds."""
-    for round_num in range(1, max_rounds + 1):
-        print(f"\n{'=' * 56}")
-        print(f"  Review-fix round {round_num}/{max_rounds}")
-        print(f"{'=' * 56}")
-
-        # Code review.
-        run_code_reviews(slug, repo_names, paths)
-
-        # Check which repos need fixes.
-        needs_fix = _any_repo_needs_changes(slug, repo_names, paths)
-        if not needs_fix:
-            print("  All repos passed review. No fixes needed.")
-            break
-
-        print(f"  Repos needing fixes: {', '.join(needs_fix)}")
-
-        if round_num < max_rounds:
-            # Re-run engineers only for repos that need fixes.
-            run_engineers(slug, needs_fix, paths, is_fix_round=True)
-        else:
-            print(f"  Max review rounds ({max_rounds}) reached.")
-            print("  Remaining issues are noted in the review files.")
-
-    # Always run cross-repo review at the end.
-    if len(repo_names) > 1:
-        run_cross_repo_review(slug, repo_names, paths)

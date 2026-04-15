@@ -45,7 +45,7 @@ The orchestrator triages the input and routes it through one of three paths:
 ```
                                            Workspace setup
                                            (clone + worktrees)
-                                                  │
+                                                   │
                          ┌─ simple-bug ────────────┼──────────────────┐
                          │                         │                  │
 Input ─> Triage ─────────┼─ complex-bug ──> Architect (light) ───────┤
@@ -53,36 +53,35 @@ Input ─> Triage ─────────┼─ complex-bug ──> Architec
                          └─ feature ──> PM ──> Debate ──> Designer? ─┤
                                                    ──> Architect     │
                                                                      v
-                                                              Engineers (tmux)
-                                                                     │
-                                                                     v
-                                                              Code review loop
-                                                              (max 2 rounds)
-                                                                     │
-                                                                     v
-                                                              Pull requests
-                                                                     │
-                                                                     v
-                                                              CI watch + fix loop
-                                                              (max 2 rounds)
+                                              Build (per-repo, parallel)
+                              ┌──────────────────┼──────────────────┐
+                              v                  v                  v
+                          any-llm            gateway           any-llm-ts
+                        ┌──────────┐       ┌──────────┐      ┌──────────┐
+                        │ engineer │       │ engineer │      │ engineer │
+                        │ review   │       │ review   │      │ review   │
+                        │ PR       │       │ PR       │      │ PR       │
+                        │ CI watch │       │ CI watch │      │ CI watch │
+                        └────┬─────┘       └────┬─────┘      └────┬─────┘
+                             └──────────────────┼─────────────────┘
+                                                v
+                                       Cross-repo review
 ```
 
-Workspace runs right after triage so that all subsequent agents (PM, architect, engineers) have the repository code available under `specs/<slug>/repos/`.
+Workspace runs right after triage so that all subsequent agents have the repo code available under `specs/<slug>/repos/`. Each repo flows through its own build pipeline independently -- no waiting for other repos.
 
 ### Phases
 
 | Phase | Mode | What happens |
 |-------|------|-------------|
 | **Intake + Triage** | Headless | Fetches the issue via `gh`, classifies as simple-bug / complex-bug / feature. You confirm or override. |
-| **Product Manager** | Interactive TUI | Creates a PRD. Asks you clarifying questions if needed. |
+| **Workspace** | Automated | Runs right after triage. Clones missing repos, creates git worktrees via `wt`. |
+| **Product Manager** | Interactive TUI | Creates a PRD. Asks clarifying questions if needed. |
 | **Debate** | Interactive TUI | A reviewer agent critiques the PRD. You participate until satisfied. |
-| **Designer** | Interactive TUI (conditional) | Creates UX/DX proposals if the feature has user-facing impact. Skipped for pure technical changes. |
-| **Architect** | Interactive TUI | Creates a tech spec with shared interface contracts and per-repo implementation specs. |
-| **Workspace** | Automated | Runs right after triage. Clones missing repos into `repos/`, creates git worktrees via `wt` into `specs/<slug>/repos/`. All subsequent agents can browse the code. |
-| **Engineers** | Parallel tmux panes | One `opencode run` per repo. Each sees only its own code and spec. |
-| **Code Review** | Parallel tmux panes | Per-repo review, then cross-repo consistency check. Auto-loops back to engineers if issues are found (max 2 rounds). |
-| **Pull Requests** | Parallel tmux panes | Creates PRs via `gh pr create`. Detects and uses repo PR templates if present. |
-| **CI Watch** | Automated (script) | Polls CI status via `gh pr checks`. If checks fail, sends engineers to fix and re-push (max 2 rounds). |
+| **Designer** | Interactive TUI (conditional) | Creates UX/DX proposals if the feature has user-facing impact. |
+| **Architect** | Interactive TUI | Creates tech spec with shared interface contracts and per-repo specs. |
+| **Build** | Parallel tmux panes | One pane per repo, each running the full pipeline independently: engineer -> code review -> fix loop -> PR -> CI watch + fix. No repo waits for another. |
+| **Cross-review** | Headless | After all repos finish, checks cross-repo interface alignment. |
 
 ### Context isolation
 
@@ -100,8 +99,9 @@ any-llm-world/
 │   ├── prd.py                  # PM, debate, designer phases
 │   ├── architect.py            # Tech spec generation
 │   ├── workspace.py            # Repo cloning, worktree creation
-│   ├── engineer.py             # Tmux orchestration, review loop
-│   ├── pr.py                  # PR creation, CI monitoring loop
+│   ├── engineer.py             # Tmux launcher, cross-repo review
+│   ├── repo_runner.py         # Per-repo pipeline: engineer -> review -> PR -> CI
+│   ├── pr.py                  # PR template detection, CI status helpers
 │   └── status.py              # Status tracking for dashboard
 ├── .opencode/agents/           # Agent definitions
 │   ├── product-manager.md

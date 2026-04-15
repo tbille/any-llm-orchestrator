@@ -16,6 +16,8 @@ from lib.config import ProjectPaths
 
 # Ordered list of all phases.  The pipeline skips some depending on triage type.
 # Workspace runs early so all agents have access to repo worktrees.
+# "build" is a per-repo parallel phase: engineer -> review -> PR -> CI.
+# "cross-review" is the only sync point after all repos finish.
 ALL_PHASES = (
     "intake",
     "workspace",
@@ -23,38 +25,26 @@ ALL_PHASES = (
     "debate",
     "designer",
     "architect",
-    "engineer",
-    "review",
-    "pr",
-    "ci",
+    "build",
+    "cross-review",
 )
 
 # Phases used per triage path.
 PHASES_BY_TYPE = {
     "feature": ALL_PHASES,
-    "complex-bug": (
-        "intake",
-        "workspace",
-        "architect",
-        "engineer",
-        "review",
-        "pr",
-        "ci",
-    ),
-    "simple-bug": ("intake", "workspace", "engineer", "review", "pr", "ci"),
+    "complex-bug": ("intake", "workspace", "architect", "build", "cross-review"),
+    "simple-bug": ("intake", "workspace", "build", "cross-review"),
 }
 
 PHASE_LABELS = {
     "intake": "Intake",
+    "workspace": "Workspace",
     "pm": "PM",
     "debate": "Debate",
     "designer": "Designer",
     "architect": "Architect",
-    "workspace": "Workspace",
-    "engineer": "Engineer",
-    "review": "Review",
-    "pr": "PR",
-    "ci": "CI",
+    "build": "Build",
+    "cross-review": "X-Review",
 }
 
 
@@ -153,6 +143,33 @@ def update_phase(
 
     if repo_statuses is not None:
         phase_data["repos"] = repo_statuses
+
+    _save_status(slug, data, paths)
+
+
+def update_repo_step(
+    slug: str,
+    repo_name: str,
+    step: str,
+    paths: ProjectPaths,
+) -> None:
+    """Update a single repo's build step in status.json.
+
+    Called by ``repo_runner.py`` as each repo progresses through
+    engineer -> review -> pr -> ci-watch -> done.
+    """
+    data = load_status(slug, paths)
+    if data is None:
+        return
+
+    repo_progress = data.setdefault("repo_progress", {})
+    repo_progress[repo_name] = {
+        "step": step,
+        "updated_at": _now(),
+    }
+
+    # Keep current_phase as "build" while repos are running.
+    data["current_phase"] = "build"
 
     _save_status(slug, data, paths)
 

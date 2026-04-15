@@ -279,8 +279,9 @@ function render(data) {
       }
       function escHtml(s) { return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 
+      const repoProgress = f.repo_progress || {};
+
       repoRows = f.repos.map(r => {
-        const rs = phaseRepos[r] || "";
         const pr = prInfo[r] || {};
         const prLink = pr.url ? '<a href="' + pr.url + '" target="_blank">PR</a>' : "";
         const ciSt = pr.ci || "none";
@@ -292,21 +293,23 @@ function render(data) {
           ? '<div class="log-tail">' + logLines + '</div>'
           : '';
 
-        // Derive live status from log activity when phase status is "running".
-        let liveStatus = rs;
-        if (rs === "running" && log.size_bytes) {
-          if (log.active) {
-            liveStatus = "running";
-          } else {
-            liveStatus = "idle";
-          }
+        // Per-repo build step from repo_progress (set by repo_runner.py).
+        const progress = repoProgress[r] || {};
+        const step = progress.step || phaseRepos[r] || "";
+
+        // Derive display status from step + log activity.
+        let displayStep = step;
+        let dotClass = "dot-running";
+        if (step === "done") {
+          dotClass = "dot-done";
+        } else if (step && log.size_bytes && !log.active) {
+          dotClass = "dot-pending";
+          displayStep = step + ' <span class="log-idle">(idle)</span>';
         }
-        const statusDotClass = liveStatus === "idle" ? "dot-pending" : ("dot-" + liveStatus);
-        const statusLabel = liveStatus === "idle" ? '<span class="log-idle">idle</span>' : liveStatus;
 
         return "<tr>" +
           "<td><strong>" + r + "</strong> " + logSize + logPhase + "</td>" +
-          "<td>" + (liveStatus ? '<span class="status-dot ' + statusDotClass + '"></span>' + statusLabel : "") + "</td>" +
+          "<td>" + (step ? '<span class="status-dot ' + dotClass + '"></span>' + displayStep : "") + "</td>" +
           "<td>" + prLink + "</td>" +
           "<td>" + (pr.url ? '<span class="status-dot dot-' + ciSt + '"></span>' + ciSt : "") + "</td>" +
           "</tr>" +
