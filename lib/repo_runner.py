@@ -546,6 +546,68 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
 # ── Step: Fix cross-review findings ───────────────────────────────────
 
 
+def _filter_cross_review_for_repo(
+    cross_review_file: Path,
+    repo_name: str,
+    output_file: Path,
+) -> bool:
+    """Extract only the sections of cross-review.md relevant to *repo_name*.
+
+    Scans the cross-review markdown for sections (headings, table rows,
+    bullet points) that mention the repo name and writes a filtered
+    version to *output_file*.  Returns True if any relevant content was
+    found.
+    """
+    if not cross_review_file.exists():
+        return False
+
+    content = cross_review_file.read_text(encoding="utf-8")
+    lines = content.splitlines()
+
+    filtered: list[str] = [
+        f"# Cross-Review Findings for {repo_name}",
+        "",
+        "Extracted from the full cross-repository review.",
+        "",
+    ]
+
+    # Pass 1: Collect heading-delimited sections that mention the repo.
+    current_section: list[str] = []
+    current_heading = ""
+    relevant_sections: list[tuple[str, list[str]]] = []
+
+    for line in lines:
+        if line.startswith("#"):
+            # Flush previous section if relevant.
+            if current_section and repo_name in "\n".join(current_section):
+                relevant_sections.append((current_heading, current_section))
+            current_heading = line
+            current_section = [line]
+        else:
+            current_section.append(line)
+
+    # Flush last section.
+    if current_section and repo_name in "\n".join(current_section):
+        relevant_sections.append((current_heading, current_section))
+
+    if relevant_sections:
+        for _heading, section_lines in relevant_sections:
+            filtered.extend(section_lines)
+            filtered.append("")
+    else:
+        # Fallback: include any individual lines that mention the repo.
+        for line in lines:
+            if repo_name in line:
+                filtered.append(line)
+        if len(filtered) <= 4:
+            # Nothing found at all.
+            return False
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_text("\n".join(filtered), encoding="utf-8")
+    return True
+
+
 def step_fix_cross_review(slug: str, repo_name: str, paths: ProjectPaths) -> None:
     """Read cross-review findings and send the engineer to fix repo-specific issues."""
     wt_path = paths.worktree_path(slug, repo_name)
@@ -559,7 +621,13 @@ def step_fix_cross_review(slug: str, repo_name: str, paths: ProjectPaths) -> Non
         print(f"  [{repo_name}] No cross-review file found, skipping.")
         return
 
-    file_args: list[str] = ["-f", str(cross_review_file)]
+    # Pre-filter cross-review findings to only include this repo's issues.
+    filtered_file = paths.spec_file(slug, f"{repo_name}-xreview-filtered.md")
+    if not _filter_cross_review_for_repo(cross_review_file, repo_name, filtered_file):
+        print(f"  [{repo_name}] No cross-review findings for this repo, skipping.")
+        return
+
+    file_args: list[str] = ["-f", str(filtered_file)]
     if spec_file.exists():
         file_args += ["-f", str(spec_file)]
 
