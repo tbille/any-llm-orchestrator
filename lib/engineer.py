@@ -365,13 +365,13 @@ def _parse_affected_repos_from_cross_review(
                 if repo in line:
                     affected.add(repo)
 
-    # Strategy 3: If the table parse found nothing, do a broad scan
-    # of the entire document for repo names mentioned near actionable
-    # keywords (but exclude informational context).
-    if not affected:
-        for repo in candidate_repos:
-            if repo in content:
-                affected.add(repo)
+    # NOTE: Previously there was a broad "Strategy 3" fallback that
+    # matched ANY mention of a repo name anywhere in the document.
+    # This was removed because it triggered false-positive fix rounds
+    # for repos that were only mentioned informationally.  If both the
+    # JSON block (strategy 1) and table parse (strategy 2) fail, we
+    # default to an empty list -- the cross-review prompt already
+    # instructs the agent to include the JSON block.
 
     return [r for r in candidate_repos if r in affected]
 
