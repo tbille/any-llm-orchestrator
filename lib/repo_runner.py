@@ -96,10 +96,6 @@ def step_engineer(
         "'Implement batch endpoint handler', 'Add unit tests for batch "
         "processing'. Bad: one giant 'implement feature' commit."
         f"{test_note}"
-        " IMPORTANT: If a command times out, do NOT retry the same command. "
-        "Run a smaller subset instead (e.g. a single test file, not the full "
-        "suite). Use -x flag to stop on first failure. Never run integration "
-        "tests or slow test suites without a timeout."
     )
 
     if is_fix_round:
@@ -222,7 +218,6 @@ def step_ci_watch(
     *,
     max_fix_rounds: int = 2,
     poll_interval: int = 30,
-    poll_timeout: int = 1800,
 ) -> None:
     """Poll CI and fix failures."""
     from lib.pr import _get_ci_status, _collect_ci_failure_logs
@@ -230,16 +225,14 @@ def step_ci_watch(
     wt_path = paths.worktree_path(slug, repo_name)
 
     for fix_round in range(max_fix_rounds + 1):
-        elapsed = 0
         status = "pending"
         detail = ""
-        while elapsed < poll_timeout:
+        while True:
             status, detail = _get_ci_status(wt_path)
             if status in ("pass", "fail", "no-ci", "no-pr"):
                 break
             print(f"  [{repo_name}] CI pending: {detail}")
             time.sleep(poll_interval)
-            elapsed += poll_interval
 
         if status == "pass":
             print(f"  [{repo_name}] CI passed: {detail}")
@@ -526,10 +519,6 @@ def step_fix_cross_review(slug: str, repo_name: str, paths: ProjectPaths) -> Non
         f"mention this repository ({repo_name}). Ignore findings for other "
         f"repos. Commit your fixes in atomic commits and push."
         f"{test_note}"
-        f" IMPORTANT: If a command times out, do NOT retry the same command. "
-        f"Run a smaller subset instead (e.g. a single test file, not the full "
-        f"suite). Use -x flag to stop on first failure. Never run integration "
-        f"tests or slow test suites without a timeout."
     )
 
     print(f"  [{repo_name}] Fixing cross-review findings...")

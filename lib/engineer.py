@@ -90,11 +90,9 @@ def _tmux_attach(session: str) -> None:
 def _tmux_wait_for_all_panes(
     session: str,
     poll_interval: float = 10.0,
-    timeout: float = 14400.0,
 ) -> bool:
     """Block until all panes have finished. Returns True if all done."""
-    elapsed = 0.0
-    while elapsed < timeout:
+    while True:
         result = subprocess.run(
             [TMUX, "list-panes", "-t", session, "-F", "#{pane_dead}"],
             capture_output=True,
@@ -108,10 +106,6 @@ def _tmux_wait_for_all_panes(
             return True
 
         time.sleep(poll_interval)
-        elapsed += poll_interval
-
-    print(f"  [warn] Timed out waiting for tmux session {session} after {timeout}s")
-    return False
 
 
 def _tmux_kill_session(session: str) -> None:
