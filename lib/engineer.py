@@ -317,6 +317,34 @@ def run_cross_review_fixes(
         _tmux_attach(session_name)
         _tmux_wait_for_all_panes(session_name)
         _tmux_kill_session(session_name)
+        return affected
+
+    print("\n── Cross-Review Fix (per-repo pipelines) ───────────")
+    print(f"  Session: {session_name}")
+    print(f"  Repos:   {', '.join(affected)}")
+    print("  Each repo: fix findings -> push -> CI watch")
+    print("────────────────────────────────────────────────────\n")
+
+    paths.logs_dir(slug).mkdir(parents=True, exist_ok=True)
+
+    pane_commands: list[tuple[str, str]] = []
+    for name in affected:
+        cmd = (
+            f"uv run python lib/repo_runner.py"
+            f" {shlex.quote(slug)} {shlex.quote(name)} --fix-cross-review"
+        )
+        pane_commands.append((cmd, str(paths.root)))
+
+    _tmux_launch_panes(session_name, pane_commands)
+
+    print("  Attaching to tmux session. Use Ctrl-B D to detach.\n")
+    _tmux_attach(session_name)
+
+    print("  Waiting for all cross-review fix pipelines to finish...")
+    _tmux_wait_for_all_panes(session_name)
+    _tmux_kill_session(session_name)
+    print("  All cross-review fix pipelines done.\n")
+
     return affected
 
 
@@ -382,31 +410,3 @@ def run_fix_pr_pipelines(
         _tmux_wait_for_all_panes(session_name)
         _tmux_kill_session(session_name)
         print("  All fix-PR pipelines done.\n")
-
-    print("\n── Cross-Review Fix (per-repo pipelines) ───────────")
-    print(f"  Session: {session_name}")
-    print(f"  Repos:   {', '.join(affected)}")
-    print("  Each repo: fix findings -> push -> CI watch")
-    print("────────────────────────────────────────────────────\n")
-
-    paths.logs_dir(slug).mkdir(parents=True, exist_ok=True)
-
-    pane_commands: list[tuple[str, str]] = []
-    for name in affected:
-        cmd = (
-            f"uv run python lib/repo_runner.py"
-            f" {shlex.quote(slug)} {shlex.quote(name)} --fix-cross-review"
-        )
-        pane_commands.append((cmd, str(paths.root)))
-
-    _tmux_launch_panes(session_name, pane_commands)
-
-    print("  Attaching to tmux session. Use Ctrl-B D to detach.\n")
-    _tmux_attach(session_name)
-
-    print("  Waiting for all cross-review fix pipelines to finish...")
-    _tmux_wait_for_all_panes(session_name)
-    _tmux_kill_session(session_name)
-    print("  All cross-review fix pipelines done.\n")
-
-    return affected
