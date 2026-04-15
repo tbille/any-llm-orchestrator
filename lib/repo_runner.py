@@ -57,6 +57,16 @@ def _run_opencode(
 # Phases where detailed, clear output matters more than token savings.
 _VERBOSE_PHASES = frozenset({"review", "cross-review", "pr"})
 
+# Scoping instruction appended to every per-repo agent prompt so the agent
+# stays within the repository it was launched in and doesn't wander into
+# sibling repos or parent directories.
+_REPO_SCOPE_INSTRUCTION = (
+    " IMPORTANT: You are working ONLY on the {repo_name} repository. "
+    "Do NOT access, read, or reference any other repositories or parent "
+    "directories. All the context you need is in the attached files and "
+    "the code in this directory."
+)
+
 
 def _write_prompt(path: Path, message: str, *, phase: str = "") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -108,18 +118,20 @@ def step_engineer(
         f"{test_note}"
     )
 
+    repo_scope = _REPO_SCOPE_INSTRUCTION.format(repo_name=repo_name)
+
     if is_fix_round:
         message = (
             f"Review the code review feedback in the attached review file and "
             f"fix the issues found. This is a {lang} project."
-            f"{scope_note}{commit_instructions}"
+            f"{scope_note}{commit_instructions}{repo_scope}"
         )
     else:
         message = (
             f"Implement the feature described in the attached spec for this "
             f"{lang} project. Follow the repository's existing patterns and "
             f"conventions. Write tests for your changes."
-            f"{scope_note}{commit_instructions}"
+            f"{scope_note}{commit_instructions}{repo_scope}"
         )
 
     # Simple-bug path: no spec file, use input directly.
@@ -130,7 +142,7 @@ def step_engineer(
         message = (
             f"Fix the bug described in the attached issue for this {lang} project. "
             f"Follow the repository's existing patterns."
-            f"{scope_note}{commit_instructions}"
+            f"{scope_note}{commit_instructions}{repo_scope}"
         )
 
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-engineer-prompt.md"
@@ -156,6 +168,7 @@ def step_review(slug: str, repo_name: str, paths: ProjectPaths) -> bool:
     if spec_file.exists():
         file_args += ["-f", str(spec_file)]
 
+    repo_scope = _REPO_SCOPE_INSTRUCTION.format(repo_name=repo_name)
     message = (
         f"Review the code changes in this {lang} repository. "
         f"Compare against the attached spec. Check for: "
@@ -166,6 +179,7 @@ def step_review(slug: str, repo_name: str, paths: ProjectPaths) -> bool:
         f"## Status: PASS or NEEDS_CHANGES "
         f"## Issues Found (list each issue) "
         f"## Recommendations (list improvements)"
+        f"{repo_scope}"
     )
 
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-review-prompt.md"
@@ -206,6 +220,7 @@ def step_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
             f"It is attached. You MUST follow its structure when writing the PR body."
         )
 
+    repo_scope = _REPO_SCOPE_INSTRUCTION.format(repo_name=repo_name)
     message = (
         f"Create a pull request for the changes in this {lang} repository. "
         f"Steps: "
@@ -214,7 +229,7 @@ def step_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
         f"3. Create a pull request using `gh pr create`. "
         f"4. Write a clear title and description summarizing the changes. "
         f"5. Reference the original issue if applicable."
-        f"{template_instruction}"
+        f"{template_instruction}{repo_scope}"
     )
 
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-pr-prompt.md"
@@ -276,12 +291,14 @@ def step_ci_watch(
         if ci_log_file.exists():
             file_args += ["-f", str(ci_log_file)]
 
+        repo_scope = _REPO_SCOPE_INSTRUCTION.format(repo_name=repo_name)
         message = (
             f"The CI pipeline is failing for this {lang} project. "
             f"The attached file lists the failed checks. "
             f"Investigate the failures by running the linter and tests locally. "
             f"Fix the issues. Make sure the linter passes and all tests pass. "
             f"Commit your fixes and push."
+            f"{repo_scope}"
         )
 
         print(f"  [{repo_name}] Fixing CI (round {fix_round + 1})...")
@@ -490,6 +507,7 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
     if repo_info and repo_info.test_hints:
         test_note = f" TESTING: {repo_info.test_hints}"
 
+    repo_scope = _REPO_SCOPE_INSTRUCTION.format(repo_name=repo_name)
     message = (
         f"Address ALL the PR review feedback in the attached file for this {lang} project. "
         f"Read each review comment AND each inline code comment carefully and "
@@ -497,7 +515,7 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
         f"comments in the 'Inline Code Comments' section — these point to "
         f"specific files and lines that need changes. "
         f"Commit your fixes in atomic commits."
-        f"{test_note}"
+        f"{test_note}{repo_scope}"
     )
 
     file_args: list[str] = ["-f", str(feedback_file)]
@@ -549,14 +567,13 @@ def step_fix_cross_review(slug: str, repo_name: str, paths: ProjectPaths) -> Non
     if repo_info and repo_info.test_hints:
         test_note = f" TESTING: {repo_info.test_hints}"
 
+    repo_scope = _REPO_SCOPE_INSTRUCTION.format(repo_name=repo_name)
     message = (
         f"The cross-repository review found issues that need fixing in this "
-        f"{lang} repository ({repo_name}). The attached cross-review.md "
-        f"contains the full review. Look at the 'Summary of Findings' table "
-        f"and the 'Recommendations' section. Fix ONLY the findings that "
-        f"mention this repository ({repo_name}). Ignore findings for other "
-        f"repos. Commit your fixes in atomic commits and push."
-        f"{test_note}"
+        f"{lang} repository ({repo_name}). The attached file contains ONLY "
+        f"the findings relevant to this repository. Fix each finding. "
+        f"Commit your fixes in atomic commits and push."
+        f"{test_note}{repo_scope}"
     )
 
     print(f"  [{repo_name}] Fixing cross-review findings...")
