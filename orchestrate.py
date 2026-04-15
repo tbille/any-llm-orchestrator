@@ -39,7 +39,7 @@ from lib.workspace import (
     setup_engineer_context,
     worktrees_exist,
 )
-from lib.costs import save_costs
+from lib.costs import check_cost_ceiling, save_costs
 from lib.engineer import (
     run_build_pipelines,
     run_cross_repo_review,
@@ -443,9 +443,16 @@ def run_pipeline(args: argparse.Namespace) -> None:
     elif triage.triage_type == "complex-bug":
         repo_names = phase_complex_bug(slug, repo_names, skip_to)
 
+    # Cost guardrail: check before the expensive build phase.
+    paths = get_project_paths()
+    if not check_cost_ceiling(slug, paths):
+        print("  Pipeline paused by cost guardrail.")
+        print(f"  Resume with: uv run orchestrate.py --resume {slug} --skip-to build")
+        save_costs(slug, paths)
+        return
+
     # Set up engineer context (AGENTS.md in each worktree).
     if not _should_skip("build", skip_to):
-        paths = get_project_paths()
         print("  Setting up engineer context (AGENTS.md)...")
         for name in repo_names:
             if paths.worktree_path(slug, name).exists():
@@ -454,6 +461,15 @@ def run_pipeline(args: argparse.Namespace) -> None:
     # Build: per-repo parallel pipelines.
     if not _should_skip("build", skip_to):
         phase_build(slug, repo_names)
+
+    # Cost guardrail: check after build before cross-review.
+    if not check_cost_ceiling(slug, paths):
+        print("  Pipeline paused by cost guardrail.")
+        print(
+            f"  Resume with: uv run orchestrate.py --resume {slug} --skip-to cross-review"
+        )
+        save_costs(slug, paths)
+        return
 
     # Cross-repo review: only sync point.
     if not _should_skip("cross-review", skip_to):

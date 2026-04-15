@@ -297,6 +297,49 @@ def get_feature_costs(slug: str, paths: ProjectPaths) -> dict | None:
     }
 
 
+# ── Cost guardrails ───────────────────────────────────────────────────
+
+# Default cost ceiling in USD.  Override via ORCHESTRATOR_COST_CEILING env var.
+DEFAULT_COST_CEILING: float = 200.0
+
+
+def _get_cost_ceiling() -> float:
+    """Return the configured cost ceiling (USD)."""
+    raw = os.environ.get("ORCHESTRATOR_COST_CEILING", "")
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return DEFAULT_COST_CEILING
+
+
+def check_cost_ceiling(slug: str, paths: ProjectPaths) -> bool:
+    """Check if the cumulative cost exceeds the configured ceiling.
+
+    Returns True if the pipeline should continue, False if it should pause.
+    When the ceiling is exceeded, the user is prompted to continue or abort.
+    """
+    costs = get_feature_costs(slug, paths)
+    if costs is None:
+        return True  # No DB, can't check.
+
+    total = costs.get("total_cost", 0.0)
+    ceiling = _get_cost_ceiling()
+
+    if total <= ceiling:
+        return True
+
+    print(f"\n{'=' * 56}")
+    print(f"  COST GUARDRAIL: ${total:.2f} exceeds ceiling of ${ceiling:.2f}")
+    print(f"  Feature: {slug}")
+    print(f"  Sessions: {costs.get('sessions', 0)}")
+    print(f"{'=' * 56}")
+
+    answer = input("  Continue anyway? [y/N] ").strip().lower()
+    return answer in ("y", "yes")
+
+
 def save_costs(slug: str, paths: ProjectPaths) -> Path | None:
     """Query costs and write them to specs/<slug>/costs.json."""
     costs = get_feature_costs(slug, paths)
