@@ -114,6 +114,10 @@ DASHBOARD_HTML = """\
   .dot-none, .dot-skipped { background: var(--muted); opacity: 0.4; }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
+  .notif-banner { font-size: 12px; padding: 6px 12px; border-radius: 6px; cursor: pointer;
+                  background: rgba(210,153,34,0.15); color: var(--yellow); border: 1px solid rgba(210,153,34,0.3); }
+  .notif-banner:hover { background: rgba(210,153,34,0.25); }
+  .notif-ok { background: rgba(63,185,80,0.1); color: var(--green); border-color: rgba(63,185,80,0.2); cursor: default; }
 
   /* Tmux badges */
   .tmux-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
@@ -126,12 +130,68 @@ DASHBOARD_HTML = """\
 
 <div class="header">
   <h1>any-llm-world</h1>
-  <div class="meta">Auto-refresh: 5s &middot; <span id="updated"></span></div>
+  <div class="meta">
+    <span id="notif-status"></span>
+    Auto-refresh: 5s &middot; <span id="updated"></span>
+  </div>
 </div>
 <div id="app"><div class="empty">Loading...</div></div>
 
 <script>
 const ICONS = { done: "\u2713", running: "\u21bb", pending: "\u00b7", failed: "\u2717", skipped: "\u2014" };
+
+// ── Browser notifications ────────────────────────────────
+
+const INTERACTIVE_PHASES = new Set(["pm", "debate", "designer", "architect"]);
+const PHASE_NOTIFY_LABELS = {
+  pm: "Product Manager is waiting for your input",
+  debate: "PRD Reviewer is waiting for discussion",
+  designer: "Designer is waiting for collaboration",
+  architect: "Architect is waiting for guidance",
+};
+const notified = new Set(); // tracks "slug:phase" combos already notified
+
+if ("Notification" in window && Notification.permission === "default") {
+  Notification.requestPermission();
+}
+
+function checkNotifications(features) {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+
+  for (const f of features) {
+    const phase = f.current_phase;
+    if (!phase || !INTERACTIVE_PHASES.has(phase)) continue;
+    const ps = (f.phases && f.phases[phase]) || {};
+    if (ps.status !== "running") continue;
+
+    const key = f.slug + ":" + phase;
+    if (notified.has(key)) continue;
+    notified.add(key);
+
+    const label = PHASE_NOTIFY_LABELS[phase] || (phase + " is running");
+    new Notification("any-llm-world", {
+      body: f.slug + ": " + label,
+      icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔔</text></svg>",
+      tag: key, // prevents duplicate OS notifications for the same event
+    });
+  }
+}
+
+function updateNotifStatus() {
+  const el = document.getElementById("notif-status");
+  if (!("Notification" in window)) {
+    el.innerHTML = "";
+    return;
+  }
+  if (Notification.permission === "granted") {
+    el.innerHTML = '<span class="notif-banner notif-ok">Notifications on</span> ';
+  } else if (Notification.permission === "default") {
+    el.innerHTML = '<span class="notif-banner" onclick="Notification.requestPermission().then(updateNotifStatus)">Enable notifications</span> ';
+  } else {
+    el.innerHTML = '<span class="notif-banner" style="opacity:0.5;cursor:default">Notifications blocked</span> ';
+  }
+}
+updateNotifStatus();
 
 function render(data) {
   const { features, phase_labels, phases_by_type, all_phases } = data;
@@ -197,6 +257,7 @@ async function refresh() {
     const res = await fetch("/api/status");
     const data = await res.json();
     render(data);
+    checkNotifications(data.features || []);
     document.getElementById("updated").textContent = new Date().toLocaleTimeString();
   } catch (e) {
     console.error("Refresh failed:", e);
