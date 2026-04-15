@@ -179,8 +179,12 @@ def classify(input_text: str, paths: ProjectPaths) -> TriageResult:
 
 
 def _extract_reply(raw_output: str) -> str:
-    """Pull the assistant's final text from opencode JSON event stream."""
-    # Try to parse as newline-delimited JSON events first.
+    """Pull the assistant's final text from opencode JSON event stream.
+
+    opencode ``--format json`` emits newline-delimited JSON events.
+    Text content lives at ``event["part"]["text"]`` when
+    ``event["type"] == "text"``.
+    """
     text_parts: list[str] = []
     for line in raw_output.strip().splitlines():
         line = line.strip()
@@ -193,12 +197,14 @@ def _extract_reply(raw_output: str) -> str:
             text_parts.append(line)
             continue
 
-        # opencode emits events with varying shapes.  Grab assistant text.
-        if isinstance(event, dict):
-            for key in ("text", "content", "message"):
-                if key in event and isinstance(event[key], str):
-                    text_parts.append(event[key])
-                    break
+        if not isinstance(event, dict):
+            continue
+
+        # Primary path: opencode wraps text in event["part"]["text"].
+        if event.get("type") == "text":
+            part = event.get("part")
+            if isinstance(part, dict) and "text" in part:
+                text_parts.append(part["text"])
 
     if text_parts:
         return "\n".join(text_parts)
