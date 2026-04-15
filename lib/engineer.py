@@ -204,23 +204,50 @@ def run_cross_repo_review(
     if tech_spec.exists():
         file_args += ["-f", str(tech_spec)]
 
+    # Max characters of diff output per repo to keep the prompt manageable.
+    _MAX_DIFF_CHARS_PER_REPO = 8000
+
     diff_sections: list[str] = []
     for name in repo_names:
         wt_path = paths.worktree_path(slug, name)
         if not wt_path.exists():
             continue
-        # Diff against the base branch to capture ALL feature changes,
-        # not just the last commit.
+        # Diff against the base branch to capture ALL feature changes.
         repo_info = REPO_BY_NAME.get(name)
         base_branch = repo_info.default_branch if repo_info else "main"
-        result = subprocess.run(
+
+        # Get the stat summary first (always useful, lightweight).
+        stat_result = subprocess.run(
             ["git", "diff", f"origin/{base_branch}...HEAD", "--stat"],
             cwd=str(wt_path),
             capture_output=True,
             text=True,
         )
-        if result.stdout.strip():
-            diff_sections.append(f"### {name}\n```\n{result.stdout.strip()}\n```")
+        stat_text = stat_result.stdout.strip() if stat_result.stdout.strip() else ""
+
+        # Get the actual diff content so the reviewer can see interface
+        # definitions, type signatures, and API contracts -- not just
+        # file names.  Truncate to keep prompts manageable.
+        diff_result = subprocess.run(
+            ["git", "diff", f"origin/{base_branch}...HEAD"],
+            cwd=str(wt_path),
+            capture_output=True,
+            text=True,
+        )
+        diff_text = diff_result.stdout.strip() if diff_result.stdout.strip() else ""
+        if len(diff_text) > _MAX_DIFF_CHARS_PER_REPO:
+            diff_text = (
+                diff_text[:_MAX_DIFF_CHARS_PER_REPO]
+                + f"\n\n... (truncated, {len(diff_result.stdout)} chars total)"
+            )
+
+        section_parts = [f"### {name}"]
+        if stat_text:
+            section_parts.append(f"**Changed files:**\n```\n{stat_text}\n```")
+        if diff_text:
+            section_parts.append(f"**Diff:**\n```diff\n{diff_text}\n```")
+        if stat_text or diff_text:
+            diff_sections.append("\n".join(section_parts))
 
         review = paths.spec_file(slug, f"{name}-review.md")
         if review.exists():
