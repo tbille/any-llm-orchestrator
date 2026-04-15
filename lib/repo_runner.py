@@ -84,17 +84,22 @@ def step_engineer(
     if repo_info and repo_info.scope_notes:
         scope_note = f" SCOPE NOTE: {repo_info.scope_notes}"
 
+    test_note = ""
+    if repo_info and repo_info.test_hints:
+        test_note = f" TESTING: {repo_info.test_hints}"
+
     commit_instructions = (
         " As you implement, commit your work in small, atomic commits. "
         "Each commit should be a single logical change (one concept per "
         "commit) with a clear, descriptive message in imperative mood. "
         "Good examples: 'Add BatchRequest and BatchResponse types', "
         "'Implement batch endpoint handler', 'Add unit tests for batch "
-        "processing'. Bad: one giant 'implement feature' commit. "
-        "Run the project linter and test suite regularly. Look at the "
-        "project config files (pyproject.toml, Cargo.toml, package.json, "
-        "Makefile, etc.) to find the correct lint and test commands. "
-        "Make sure lint and tests pass before your final commit."
+        "processing'. Bad: one giant 'implement feature' commit."
+        f"{test_note}"
+        " IMPORTANT: If a command times out, do NOT retry the same command. "
+        "Run a smaller subset instead (e.g. a single test file, not the full "
+        "suite). Use -x flag to stop on first failure. Never run integration "
+        "tests or slow test suites without a timeout."
     )
 
     if is_fix_round:

@@ -16,6 +16,7 @@ class RepoInfo:
     description: str
     default_branch: str = "main"
     scope_notes: str = ""
+    test_hints: str = ""
 
     @property
     def github_slug(self) -> str:
@@ -41,6 +42,14 @@ REPOS: tuple[RepoInfo, ...] = (
             "repository -- do NOT add or modify gateway server code in this "
             "repo. Only the gateway provider/client code lives here."
         ),
+        test_hints=(
+            "Run ONLY the tests related to your changes first: "
+            "uv run pytest tests/unit/<relevant_file> -x -q. "
+            "The full test suite is slow. Run it once at the end: "
+            "uv run pytest tests/unit -x -q --timeout=60. "
+            "Do NOT run integration tests. "
+            "For linting use: uv run ruff check . && uv run mypy."
+        ),
     ),
     RepoInfo(
         name="gateway",
@@ -50,24 +59,38 @@ REPOS: tuple[RepoInfo, ...] = (
             "LLM gateway service. Routes requests through the any-llm SDK "
             "to various LLM providers. Captures observability data."
         ),
+        test_hints=(
+            "Run targeted tests first: uv run pytest tests/<relevant_file> -x -q. "
+            "Full suite: uv run pytest -x -q --timeout=60. "
+            "For linting: uv run ruff check . && uv run mypy."
+        ),
     ),
     RepoInfo(
         name="any-llm-rust",
         github_url="https://github.com/mozilla-ai/any-llm-rust",
         language="rust",
         description="Rust SDK for communicating with the any-llm gateway.",
+        test_hints=(
+            "Run: cargo test --all-features. "
+            "Lint: cargo clippy --all-features -- -D warnings && cargo fmt --check."
+        ),
     ),
     RepoInfo(
         name="any-llm-go",
         github_url="https://github.com/mozilla-ai/any-llm-go",
         language="go",
         description="Go SDK for communicating with the any-llm gateway.",
+        test_hints=("Run: go test ./... -race -count=1. Lint: golangci-lint run."),
     ),
     RepoInfo(
         name="any-llm-ts",
         github_url="https://github.com/mozilla-ai/any-llm-ts",
         language="typescript",
         description="TypeScript SDK for communicating with the any-llm gateway.",
+        test_hints=(
+            "Run: npm test (or the test script in package.json). "
+            "Lint: npx biome check . or the lint script in package.json."
+        ),
     ),
     RepoInfo(
         name="any-llm-platform",
@@ -78,6 +101,11 @@ REPOS: tuple[RepoInfo, ...] = (
             "Pulls observability data from the gateway."
         ),
         default_branch="develop",
+        test_hints=(
+            "Run targeted tests first: uv run pytest tests/<relevant_file> -x -q. "
+            "Full suite: uv run pytest -x -q --timeout=60. "
+            "For linting: uv run ruff check . && uv run mypy."
+        ),
     ),
 )
 
