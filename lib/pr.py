@@ -100,8 +100,16 @@ def _get_ci_status(worktree: Path) -> tuple[str, str]:
     return "pending", "Some checks still running"
 
 
+_LOG_FETCH_TIMEOUT = 30  # seconds -- cap per-run log fetch
+
+
 def _collect_ci_failure_logs(worktree: Path) -> str:
-    """Pull the failed check names + details URL via gh."""
+    """Pull failed check names, URLs, and actual log output via gh.
+
+    For each failed check, attempts to fetch the run log using
+    ``gh run view --log-failed`` to give the CI-fix agent concrete
+    error messages rather than just check names and links.
+    """
     result = subprocess.run(
         ["gh", "pr", "checks", "--json", "name,state,link"],
         cwd=str(worktree),
@@ -126,6 +134,49 @@ def _collect_ci_failure_logs(worktree: Path) -> str:
             lines.append(f"## {name}")
             lines.append(f"- State: {state}")
             lines.append(f"- Details: {url}")
+            lines.append("")
+
+    # Try to fetch actual failure logs from the most recent failed run.
+    # Extract run ID from the check link (format: .../runs/<id>/...).
+    run_ids_seen: set[str] = set()
+    for check in checks:
+        state = check.get("state", "").upper()
+        if state not in fail_states:
+            continue
+        link = check.get("link", "")
+        # GitHub check links look like:
+        #   https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>
+        parts = link.split("/runs/")
+        if len(parts) < 2:
+            continue
+        run_id = parts[1].split("/")[0]
+        if run_id in run_ids_seen:
+            continue
+        run_ids_seen.add(run_id)
+
+        try:
+            log_result = subprocess.run(
+                ["gh", "run", "view", run_id, "--log-failed"],
+                cwd=str(worktree),
+                capture_output=True,
+                text=True,
+                timeout=_LOG_FETCH_TIMEOUT,
+            )
+            if log_result.returncode == 0 and log_result.stdout.strip():
+                # Truncate to last 200 lines to keep the prompt manageable.
+                log_lines = log_result.stdout.strip().splitlines()
+                if len(log_lines) > 200:
+                    log_lines = log_lines[-200:]
+                    lines.append(f"## Run {run_id} — Failed Log (last 200 lines)")
+                else:
+                    lines.append(f"## Run {run_id} — Failed Log")
+                lines.append("")
+                lines.append("```")
+                lines.extend(log_lines)
+                lines.append("```")
+                lines.append("")
+        except subprocess.TimeoutExpired:
+            lines.append(f"## Run {run_id} — Log fetch timed out")
             lines.append("")
 
     return "\n".join(lines)
