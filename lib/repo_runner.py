@@ -155,8 +155,19 @@ def step_engineer(
 # ── Step: Review ──────────────────────────────────────────────────────
 
 
-def step_review(slug: str, repo_name: str, paths: ProjectPaths) -> bool:
-    """Run the code review agent. Returns True if review passed."""
+def step_review(
+    slug: str,
+    repo_name: str,
+    paths: ProjectPaths,
+    *,
+    is_followup: bool = False,
+) -> bool:
+    """Run the code review agent. Returns True if review passed.
+
+    When *is_followup* is True, the reviewer focuses on verifying that
+    previously flagged issues were fixed rather than doing a full review
+    from scratch.  The prior review file is attached as context.
+    """
     wt_path = paths.worktree_path(slug, repo_name)
     spec_file = paths.spec_file(slug, f"{repo_name}-spec.md")
     review_file = paths.spec_file(slug, f"{repo_name}-review.md")
@@ -169,18 +180,38 @@ def step_review(slug: str, repo_name: str, paths: ProjectPaths) -> bool:
         file_args += ["-f", str(spec_file)]
 
     repo_scope = _REPO_SCOPE_INSTRUCTION.format(repo_name=repo_name)
-    message = (
-        f"Review the code changes in this {lang} repository. "
-        f"Compare against the attached spec. Check for: "
-        f"spec compliance, code quality and {lang}-idiomatic patterns, "
-        f"test coverage, error handling, backwards compatibility. "
-        f"Write your review to: {review_file} "
-        f"Use this format: "
-        f"## Status: PASS or NEEDS_CHANGES "
-        f"## Issues Found (list each issue) "
-        f"## Recommendations (list improvements)"
-        f"{repo_scope}"
-    )
+
+    if is_followup and review_file.exists():
+        # Attach the prior review so the reviewer knows what to verify.
+        file_args += ["-f", str(review_file)]
+        message = (
+            f"This is a FOLLOW-UP review for this {lang} repository. "
+            f"The attached review file contains the previous review with "
+            f"BLOCKER and MAJOR issues that the engineer was asked to fix. "
+            f"Focus on verifying that those specific issues were addressed. "
+            f"Also check for any new regressions introduced by the fixes. "
+            f"Do NOT re-review the entire codebase from scratch. "
+            f"Write your updated review to: {review_file} "
+            f"Use this format: "
+            f"## Status: PASS or NEEDS_CHANGES "
+            f"## Previously Flagged Issues (status of each: FIXED or STILL_OPEN) "
+            f"## New Issues Found (if any) "
+            f"## Recommendations (list improvements)"
+            f"{repo_scope}"
+        )
+    else:
+        message = (
+            f"Review the code changes in this {lang} repository. "
+            f"Compare against the attached spec. Check for: "
+            f"spec compliance, code quality and {lang}-idiomatic patterns, "
+            f"test coverage, error handling, backwards compatibility. "
+            f"Write your review to: {review_file} "
+            f"Use this format: "
+            f"## Status: PASS or NEEDS_CHANGES "
+            f"## Issues Found (list each issue) "
+            f"## Recommendations (list improvements)"
+            f"{repo_scope}"
+        )
 
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-review-prompt.md"
     _write_prompt(prompt_file, message, phase="review")
@@ -894,7 +925,12 @@ def run_repo_pipeline(
 
         print(f"\n  [{repo_name}] -> review (round {review_round + 1})")
         update_repo_step(slug, repo_name, f"review-{review_round + 1}", paths)
-        review_passed = step_review(slug, repo_name, paths)
+        review_passed = step_review(
+            slug,
+            repo_name,
+            paths,
+            is_followup=is_fix,
+        )
 
         if review_passed:
             print(f"  [{repo_name}] Review passed.")
