@@ -160,7 +160,7 @@ def phase_feature(slug: str, repo_names: list[str], skip_to: str | None) -> list
 
     # PM
     if _should_skip("pm", skip_to):
-        update_phase(slug, "pm", "skipped", paths)
+        pass  # Don't overwrite status -- phase may have completed in a prior run.
     elif not prd_exists(slug, paths):
         update_phase(slug, "pm", "running", paths)
         run_pm(slug, paths)
@@ -171,7 +171,7 @@ def phase_feature(slug: str, repo_names: list[str], skip_to: str | None) -> list
 
     # Debate
     if _should_skip("debate", skip_to):
-        update_phase(slug, "debate", "skipped", paths)
+        pass
     elif prd_exists(slug, paths):
         update_phase(slug, "debate", "running", paths)
         run_debate(slug, paths)
@@ -181,7 +181,7 @@ def phase_feature(slug: str, repo_names: list[str], skip_to: str | None) -> list
 
     # Designer (conditional)
     if _should_skip("designer", skip_to):
-        update_phase(slug, "designer", "skipped", paths)
+        pass
     elif not design_exists(slug, paths):
         print("\n── Design classification ────────────────────────────")
         if classify_design_need(slug, paths):
@@ -197,7 +197,6 @@ def phase_feature(slug: str, repo_names: list[str], skip_to: str | None) -> list
 
     # Architect
     if _should_skip("architect", skip_to):
-        update_phase(slug, "architect", "skipped", paths)
         return get_affected_repos(slug, repo_names, paths)
     if not tech_spec_exists(slug, paths):
         update_phase(slug, "architect", "running", paths)
@@ -216,7 +215,6 @@ def phase_complex_bug(
     paths = get_project_paths()
 
     if _should_skip("architect", skip_to):
-        update_phase(slug, "architect", "skipped", paths)
         return get_affected_repos(slug, repo_names, paths)
     if not tech_spec_exists(slug, paths):
         update_phase(slug, "architect", "running", paths)
