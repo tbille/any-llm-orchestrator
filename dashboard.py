@@ -561,14 +561,15 @@ function render(data) {
     let fixBtnHtml = "";
     if (showFixBtn) {
       const btnId = "fix-pr-btn-" + f.slug;
+      const onclickAttr = "fixPRs(&apos;" + f.slug + "&apos;)";
       if (job.status === "running") {
         fixBtnHtml = '<button id="' + btnId + '" class="action-btn btn-running" disabled>Fixing PRs\u2026</button>';
       } else if (job.status === "done") {
-        fixBtnHtml = '<button id="' + btnId + '" class="action-btn btn-done" onclick="fixPRs(\'' + f.slug + '\')">Fix PRs \u2713</button>';
+        fixBtnHtml = '<button id="' + btnId + '" class="action-btn btn-done" onclick="' + onclickAttr + '">Fix PRs \u2713</button>';
       } else if (job.status === "failed") {
-        fixBtnHtml = '<button id="' + btnId + '" class="action-btn btn-failed" onclick="fixPRs(\'' + f.slug + '\')">Fix PRs (retry)</button>';
+        fixBtnHtml = '<button id="' + btnId + '" class="action-btn btn-failed" onclick="' + onclickAttr + '">Fix PRs (retry)</button>';
       } else {
-        fixBtnHtml = '<button id="' + btnId + '" class="action-btn" onclick="fixPRs(\'' + f.slug + '\')">Fix PRs</button>';
+        fixBtnHtml = '<button id="' + btnId + '" class="action-btn" onclick="' + onclickAttr + '">Fix PRs</button>';
       }
     }
 
