@@ -118,6 +118,17 @@ any-llm (Python) -> providers (OpenAI, Anthropic, etc.) directly OR via gateway
 - Changes to the Python SDK can affect the gateway (which imports it).
 """
 
+# ── Caveman prompt (token-saving mode for headless agents) ────────────
+
+CAVEMAN_PROMPT = (
+    "Terse like caveman. Technical substance exact. Only fluff die. "
+    "Drop: articles, filler (just/really/basically), pleasantries, hedging. "
+    "Fragments OK. Short synonyms. Code unchanged. "
+    "Pattern: [thing] [action] [reason]. [next step]. "
+    "ACTIVE EVERY RESPONSE. No revert after many turns. No filler drift. "
+    "Code/commits/PRs: write normal. "
+)
+
 
 # ── Path helpers ──────────────────────────────────────────────────────
 

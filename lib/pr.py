@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-from lib.config import REPO_BY_NAME, ProjectPaths
+from lib.config import CAVEMAN_PROMPT, REPO_BY_NAME, ProjectPaths
 from lib.engineer import (
     _tmux_attach,
     _tmux_kill_session,
@@ -91,7 +91,7 @@ def _build_pr_command(
 
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-pr-prompt.md"
     prompt_file.parent.mkdir(parents=True, exist_ok=True)
-    prompt_file.write_text(message, encoding="utf-8")
+    prompt_file.write_text(CAVEMAN_PROMPT + message, encoding="utf-8")
 
     parts = [
         "opencode",
@@ -420,7 +420,7 @@ def _build_ci_fix_command(
 
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-ci-fix-prompt.md"
     prompt_file.parent.mkdir(parents=True, exist_ok=True)
-    prompt_file.write_text(message, encoding="utf-8")
+    prompt_file.write_text(CAVEMAN_PROMPT + message, encoding="utf-8")
 
     parts = [
         "opencode",

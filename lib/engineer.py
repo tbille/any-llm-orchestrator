@@ -9,7 +9,7 @@ import sys
 import time
 from pathlib import Path
 
-from lib.config import REPO_BY_NAME, ProjectPaths
+from lib.config import CAVEMAN_PROMPT, REPO_BY_NAME, ProjectPaths
 
 
 # ── Tmux helpers ──────────────────────────────────────────────────────
@@ -217,7 +217,7 @@ def _build_engineer_command(
     # multi-line strings passed through tmux.
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-engineer-prompt.md"
     prompt_file.parent.mkdir(parents=True, exist_ok=True)
-    prompt_file.write_text(message, encoding="utf-8")
+    prompt_file.write_text(CAVEMAN_PROMPT + message, encoding="utf-8")
 
     parts = [
         "opencode",
@@ -326,7 +326,7 @@ def _build_review_command(
 
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-review-prompt.md"
     prompt_file.parent.mkdir(parents=True, exist_ok=True)
-    prompt_file.write_text(message, encoding="utf-8")
+    prompt_file.write_text(CAVEMAN_PROMPT + message, encoding="utf-8")
 
     parts = [
         "opencode",
