@@ -805,6 +805,9 @@ def step_pr(
     """
     wt_path = paths.worktree_path(slug, repo_name)
 
+    # Rebase onto the latest base branch before pushing the PR.
+    step_rebase_on_base(slug, repo_name, paths)
+
     # Fast path: no PR template, use shell commands.
     if _try_deterministic_pr(slug, repo_name, wt_path, paths, draft=draft):
         return
@@ -930,6 +933,9 @@ def step_ci_watch(
                 file=sys.stderr,
             )
 
+        # Rebase onto the latest base branch before pushing.
+        step_rebase_on_base(slug, repo_name, paths)
+
         push_result = subprocess.run(
             ["git", "push"], cwd=str(wt_path), capture_output=True, text=True
         )
@@ -939,6 +945,186 @@ def step_ci_watch(
                 f"{push_result.stderr.strip()[:200]}",
                 file=sys.stderr,
             )
+
+
+# ── Step: Rebase on base branch ───────────────────────────────────────
+
+_MAX_REBASE_CONFLICT_ROUNDS = 5  # Safety cap for conflict resolution loops.
+
+
+def step_rebase_on_base(
+    slug: str,
+    repo_name: str,
+    paths: ProjectPaths,
+) -> bool:
+    """Fetch the base branch and rebase the feature branch onto it.
+
+    If the rebase produces merge conflicts, an opencode agent is invoked
+    to resolve them, after which the rebase is continued.  This repeats
+    until the rebase finishes or the safety cap is reached.
+
+    Returns ``True`` if the branch was successfully rebased (or was
+    already up-to-date), ``False`` if the rebase had to be aborted.
+    """
+    wt_path = paths.worktree_path(slug, repo_name)
+    repo_info = REPO_BY_NAME.get(repo_name)
+    base_branch = repo_info.default_branch if repo_info else "main"
+    lang = repo_info.language if repo_info else "unknown"
+    log_file = paths.logs_dir(slug) / f"{repo_name}-rebase.log"
+
+    # 1. Fetch the latest base branch from origin.
+    print(f"  [{repo_name}] Fetching origin/{base_branch}...")
+    fetch = subprocess.run(
+        ["git", "fetch", "origin", base_branch],
+        cwd=str(wt_path),
+        capture_output=True,
+        text=True,
+    )
+    if fetch.returncode != 0:
+        print(
+            f"  [{repo_name}] git fetch failed: {fetch.stderr.strip()[:200]}",
+            file=sys.stderr,
+        )
+        return False
+
+    # 2. Check whether a rebase is needed at all.
+    merge_base = subprocess.run(
+        ["git", "merge-base", "HEAD", f"origin/{base_branch}"],
+        cwd=str(wt_path),
+        capture_output=True,
+        text=True,
+    )
+    remote_head = subprocess.run(
+        ["git", "rev-parse", f"origin/{base_branch}"],
+        cwd=str(wt_path),
+        capture_output=True,
+        text=True,
+    )
+    if (
+        merge_base.returncode == 0
+        and remote_head.returncode == 0
+        and merge_base.stdout.strip() == remote_head.stdout.strip()
+    ):
+        print(f"  [{repo_name}] Already up-to-date with origin/{base_branch}.")
+        return True
+
+    # 3. Attempt the rebase.
+    print(f"  [{repo_name}] Rebasing onto origin/{base_branch}...")
+    rebase = subprocess.run(
+        ["git", "rebase", f"origin/{base_branch}"],
+        cwd=str(wt_path),
+        capture_output=True,
+        text=True,
+    )
+
+    if rebase.returncode == 0:
+        print(f"  [{repo_name}] Rebase completed cleanly.")
+        _force_push_after_rebase(wt_path, repo_name)
+        return True
+
+    # 4. Conflict loop — let the agent resolve conflicts, then continue.
+    for conflict_round in range(1, _MAX_REBASE_CONFLICT_ROUNDS + 1):
+        print(
+            f"  [{repo_name}] Rebase conflict (round {conflict_round}/"
+            f"{_MAX_REBASE_CONFLICT_ROUNDS}) — invoking agent..."
+        )
+
+        # Collect conflict details.
+        diff_result = subprocess.run(
+            ["git", "diff", "--name-only", "--diff-filter=U"],
+            cwd=str(wt_path),
+            capture_output=True,
+            text=True,
+        )
+        conflicted_files = diff_result.stdout.strip()
+
+        diff_full = subprocess.run(
+            ["git", "diff"],
+            cwd=str(wt_path),
+            capture_output=True,
+            text=True,
+        )
+
+        conflict_info = (
+            f"# Rebase Conflict — {repo_name}\n\n"
+            f"The rebase onto `origin/{base_branch}` produced merge conflicts.\n\n"
+            f"## Conflicted files\n\n```\n{conflicted_files}\n```\n\n"
+            f"## Full diff (with conflict markers)\n\n"
+            f"```diff\n{diff_full.stdout[:30000]}\n```\n"
+        )
+        conflict_file = paths.spec_file(slug, f"{repo_name}-rebase-conflicts.md")
+        conflict_file.write_text(conflict_info, encoding="utf-8")
+
+        repo_scope = _REPO_SCOPE_INSTRUCTION.format(repo_name=repo_name)
+        message = (
+            f"The git rebase of this {lang} project onto origin/{base_branch} "
+            f"has produced merge conflicts.  The conflicted files and the full "
+            f"diff with conflict markers are in the attached file.  "
+            f"Resolve ALL conflicts in the working tree by editing the files "
+            f"to their correct final state (remove all conflict markers).  "
+            f"After editing, stage every resolved file with `git add`.  "
+            f"Do NOT run `git rebase --continue` — I will do that.  "
+            f"Do NOT commit."
+            f"{repo_scope}"
+        )
+
+        prompt_file = (
+            paths.logs_dir(slug) / f"{repo_name}-rebase-prompt-{conflict_round}.md"
+        )
+        _write_prompt(prompt_file, message, phase="rebase")
+        _run_opencode(wt_path, prompt_file, ["-f", str(conflict_file)], log_file)
+
+        # Continue the rebase after the agent has staged resolved files.
+        cont = subprocess.run(
+            ["git", "-c", "core.editor=true", "rebase", "--continue"],
+            cwd=str(wt_path),
+            capture_output=True,
+            text=True,
+        )
+        if cont.returncode == 0:
+            print(
+                f"  [{repo_name}] Rebase completed after {conflict_round} conflict round(s)."
+            )
+            _force_push_after_rebase(wt_path, repo_name)
+            return True
+
+        # If rebase --continue itself hits another conflicting commit,
+        # loop again.
+        print(
+            f"  [{repo_name}] Rebase still has conflicts after round {conflict_round}."
+        )
+
+    # Safety cap reached — abort the rebase so the worktree is usable.
+    print(
+        f"  [{repo_name}] Aborting rebase after {_MAX_REBASE_CONFLICT_ROUNDS} "
+        f"conflict rounds.",
+        file=sys.stderr,
+    )
+    subprocess.run(
+        ["git", "rebase", "--abort"],
+        cwd=str(wt_path),
+        capture_output=True,
+    )
+    return False
+
+
+def _force_push_after_rebase(wt_path: Path, repo_name: str) -> None:
+    """Force-push the rebased branch (with lease for safety)."""
+    print(f"  [{repo_name}] Force-pushing rebased branch...")
+    push = subprocess.run(
+        ["git", "push", "--force-with-lease"],
+        cwd=str(wt_path),
+        capture_output=True,
+        text=True,
+    )
+    if push.returncode != 0:
+        print(
+            f"  [{repo_name}] git push --force-with-lease failed: "
+            f"{push.stderr.strip()[:200]}",
+            file=sys.stderr,
+        )
+    else:
+        print(f"  [{repo_name}] Rebased branch pushed.")
 
 
 # ── Step: Fix PR feedback ─────────────────────────────────────────────
@@ -963,6 +1149,15 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
     lang = repo_info.language if repo_info else "unknown"
     log_file = paths.logs_dir(slug) / f"{repo_name}-pr-fix.log"
     feedback_file = paths.spec_file(slug, f"{repo_name}-pr-feedback.md")
+
+    # ── 0. Rebase onto the latest base branch ─────────────────────────
+    rebased = step_rebase_on_base(slug, repo_name, paths)
+    if not rebased:
+        print(
+            f"  [{repo_name}] Rebase failed — continuing with PR feedback "
+            f"anyway (branch may be behind).",
+            file=sys.stderr,
+        )
 
     # ── 1. Fetch PR metadata, reviews, and general comments ───────────
     print(f"  [{repo_name}] Fetching PR review comments...")
@@ -1345,6 +1540,9 @@ def step_fix_cross_review(slug: str, repo_name: str, paths: ProjectPaths) -> Non
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-xfix-prompt.md"
     _write_prompt(prompt_file, message, phase="xfix")
     _run_opencode(wt_path, prompt_file, file_args, log_file)
+
+    # Rebase onto the latest base branch before pushing.
+    step_rebase_on_base(slug, repo_name, paths)
 
     # Push the fixes.
     print(f"  [{repo_name}] Pushing cross-review fixes...")

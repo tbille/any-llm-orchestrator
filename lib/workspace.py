@@ -49,7 +49,12 @@ def ensure_repos_cloned(paths: ProjectPaths) -> None:
     for repo in REPOS:
         dest = paths.repo_path(repo.name)
         if dest.exists() and (dest / ".git").exists():
-            print(f"  [ok]   {repo.name} already cloned")
+            print(f"  [fetch] {repo.name} — updating from origin")
+            subprocess.run(
+                ["git", "fetch", "origin"],
+                cwd=str(dest),
+                capture_output=True,
+            )
             continue
 
         with _repo_lock(paths, repo.name):
@@ -117,9 +122,23 @@ def create_worktrees(
                 result[name] = wt_path
                 continue
 
-            # Ensure the base branch is up to date.
+            # Ensure the base branch is fully up to date.
             subprocess.run(
                 ["git", "fetch", "origin", base_branch],
+                cwd=str(repo_dir),
+                capture_output=True,
+            )
+            # Fast-forward the local base branch to match origin so that
+            # tools like `wt` that resolve branch names locally will see
+            # the very latest commits.
+            subprocess.run(
+                [
+                    "git",
+                    "branch",
+                    "-f",
+                    base_branch,
+                    f"origin/{base_branch}",
+                ],
                 cwd=str(repo_dir),
                 capture_output=True,
             )
@@ -135,6 +154,8 @@ def create_worktrees(
                         "switch",
                         "--create",
                         slug,
+                        "--base",
+                        base_branch,
                         "-y",  # skip approval prompts
                         "--no-verify",  # skip hooks
                         "--no-cd",  # don't try to cd
