@@ -25,7 +25,6 @@ from lib.intake import (
     save_triage,
 )
 from lib.prd import (
-    classify_design_need,
     debate_done,
     design_exists,
     prd_exists,
@@ -38,6 +37,7 @@ from lib.workspace import (
     create_worktrees,
     ensure_repos_cloned,
     setup_engineer_context,
+    update_worktrees,
     worktrees_exist,
 )
 from lib.costs import check_cost_ceiling, save_costs
@@ -46,7 +46,7 @@ from lib.engineer import (
     run_cross_repo_review,
     run_cross_review_fixes,
 )
-from lib.status import PHASES_BY_TYPE, init_status, update_phase
+from lib.status import init_status, update_phase
 
 
 # ── Phase ordering for --skip-to ──────────────────────────────────────
@@ -183,7 +183,9 @@ def phase_intake(args: argparse.Namespace) -> TriageResult:
 
     save_input(triage.slug, input_text, paths)
     save_triage(triage.slug, triage, paths)
-    init_status(triage.slug, triage.triage_type, triage.repos, paths)
+    init_status(
+        triage.slug, triage.triage_type, triage.repos, paths, spec_phases=triage.phases
+    )
     update_phase(triage.slug, "intake", "done", paths)
 
     print(f"\n  Saved to: specs/{triage.slug}/")
@@ -198,7 +200,9 @@ def phase_workspace(slug: str, repo_names: list[str]) -> dict[str, Path]:
     update_phase(slug, "workspace", "running", paths)
 
     if worktrees_exist(slug, repo_names, paths):
-        print("  [skip] All worktrees already exist.")
+        print("  [update] Worktrees exist, updating to latest upstream...")
+        ensure_repos_cloned(paths)
+        update_worktrees(slug, repo_names, paths)
         update_phase(slug, "workspace", "done", paths)
         return {name: paths.worktree_path(slug, name) for name in repo_names}
 
@@ -213,18 +217,30 @@ def phase_workspace(slug: str, repo_names: list[str]) -> dict[str, Path]:
     return worktrees
 
 
-def phase_feature(
+def phase_specs(
     slug: str,
     repo_names: list[str],
+    phases: list[str],
     skip_to: str | None,
     *,
     headless: bool = False,
+    triage_type: str = "feature",
 ) -> list[str]:
-    """PM -> debate -> designer? -> architect."""
+    """Run the spec-phase agents selected by the triage classifier.
+
+    ``phases`` is a subset of ``["pm", "debate", "designer", "architect"]``.
+    Each phase is only executed if it appears in the list.  Phases not in
+    the list are marked "skipped" in the status tracker.
+    """
     paths = get_project_paths()
 
-    # PM + Debate: headless mode combines both into a single pass.
-    if headless:
+    has_pm = "pm" in phases
+    has_debate = "debate" in phases
+    has_designer = "designer" in phases
+    has_architect = "architect" in phases
+
+    # ── PM + Debate ───────────────────────────────────────────────
+    if has_pm and headless:
         from lib.prd import run_pm_headless
 
         if _should_skip("pm", skip_to):
@@ -239,7 +255,7 @@ def phase_feature(
             print(f"  [skip] PRD already exists: specs/{slug}/prd.md")
             update_phase(slug, "pm", "done", paths)
             update_phase(slug, "debate", "done", paths)
-    else:
+    elif has_pm:
         # PM (interactive)
         if _should_skip("pm", skip_to):
             pass
@@ -252,66 +268,48 @@ def phase_feature(
             print(f"  [skip] PRD already exists: specs/{slug}/prd.md")
             update_phase(slug, "pm", "done", paths)
 
-        # Debate (interactive)
-        if _should_skip("debate", skip_to):
-            pass
-        elif debate_done(slug, paths):
-            print(f"  [skip] Debate already completed for: specs/{slug}/")
-            update_phase(slug, "debate", "done", paths)
-        elif prd_exists(slug, paths):
-            update_phase(slug, "debate", "running", paths)
-            run_debate(slug, paths)
-            update_phase(slug, "debate", "done", paths)
-            _confirm_continue("Debate", slug)
-        else:
-            update_phase(slug, "debate", "skipped", paths)
+        # Debate (interactive) -- always paired with PM.
+        if has_debate:
+            if _should_skip("debate", skip_to):
+                pass
+            elif debate_done(slug, paths):
+                print(f"  [skip] Debate already completed for: specs/{slug}/")
+                update_phase(slug, "debate", "done", paths)
+            elif prd_exists(slug, paths):
+                update_phase(slug, "debate", "running", paths)
+                run_debate(slug, paths)
+                update_phase(slug, "debate", "done", paths)
+                _confirm_continue("Debate", slug)
+            else:
+                update_phase(slug, "debate", "skipped", paths)
 
-    # Designer (conditional)
-    if _should_skip("designer", skip_to):
-        pass
-    elif not design_exists(slug, paths):
-        print("\n── Design classification ────────────────────────────")
-        if classify_design_need(slug, paths):
+    # ── Designer ──────────────────────────────────────────────────
+    if has_designer:
+        if _should_skip("designer", skip_to):
+            pass
+        elif not design_exists(slug, paths):
             update_phase(slug, "designer", "running", paths)
             run_designer(slug, paths)
             update_phase(slug, "designer", "done", paths)
             _confirm_continue("Designer", slug)
         else:
-            print("  Design phase skipped (technical-only change).")
-            update_phase(slug, "designer", "skipped", paths)
-    else:
-        print(f"  [skip] Design doc already exists: specs/{slug}/design.md")
-        update_phase(slug, "designer", "done", paths)
+            print(f"  [skip] Design doc already exists: specs/{slug}/design.md")
+            update_phase(slug, "designer", "done", paths)
 
-    # Architect
-    if _should_skip("architect", skip_to):
-        return get_affected_repos(slug, repo_names, paths)
-    if not tech_spec_exists(slug, paths):
-        update_phase(slug, "architect", "running", paths)
-        result = run_architect(slug, repo_names, paths)
+    # ── Architect ─────────────────────────────────────────────────
+    if has_architect:
+        light = triage_type == "complex-bug"
+        if _should_skip("architect", skip_to):
+            return get_affected_repos(slug, repo_names, paths)
+        if not tech_spec_exists(slug, paths):
+            update_phase(slug, "architect", "running", paths)
+            result = run_architect(slug, repo_names, paths, light=light)
+            update_phase(slug, "architect", "done", paths)
+            _confirm_continue("Architect", slug)
+            return result
+        print(f"  [skip] Tech spec already exists: specs/{slug}/tech-spec.md")
         update_phase(slug, "architect", "done", paths)
-        _confirm_continue("Architect", slug)
-        return result
-    print(f"  [skip] Tech spec already exists: specs/{slug}/tech-spec.md")
-    update_phase(slug, "architect", "done", paths)
-    return get_affected_repos(slug, repo_names, paths)
 
-
-def phase_complex_bug(
-    slug: str, repo_names: list[str], skip_to: str | None
-) -> list[str]:
-    """Lightweight architect only."""
-    paths = get_project_paths()
-
-    if _should_skip("architect", skip_to):
-        return get_affected_repos(slug, repo_names, paths)
-    if not tech_spec_exists(slug, paths):
-        update_phase(slug, "architect", "running", paths)
-        result = run_architect(slug, repo_names, paths, light=True)
-        update_phase(slug, "architect", "done", paths)
-        return result
-    print(f"  [skip] Tech spec already exists: specs/{slug}/tech-spec.md")
-    update_phase(slug, "architect", "done", paths)
     return get_affected_repos(slug, repo_names, paths)
 
 
@@ -484,11 +482,13 @@ def run_pipeline(args: argparse.Namespace) -> None:
     triage = phase_intake(args)
     slug = triage.slug
     repo_names = triage.repos
+    phases_str = ", ".join(triage.phases) if triage.phases else "(none)"
 
     print(f"\n{'=' * 56}")
     print(f"  Path: {_PATH_HEADER[triage.triage_type]}")
     print(f"  Slug: {slug}")
     print(f"  Repos: {', '.join(repo_names)}")
+    print(f"  Phases: {phases_str}")
     if skip_to:
         print(f"  Skip-to: {skip_to}")
     print(f"{'=' * 56}")
@@ -497,12 +497,16 @@ def run_pipeline(args: argparse.Namespace) -> None:
     if not _should_skip("workspace", skip_to):
         phase_workspace(slug, repo_names)
 
-    # Spec phases: depends on triage type.
+    # Spec phases: driven by the phases list from intake.
     headless = getattr(args, "headless", False)
-    if triage.triage_type == "feature":
-        repo_names = phase_feature(slug, repo_names, skip_to, headless=headless)
-    elif triage.triage_type == "complex-bug":
-        repo_names = phase_complex_bug(slug, repo_names, skip_to)
+    repo_names = phase_specs(
+        slug,
+        repo_names,
+        triage.phases,
+        skip_to,
+        headless=headless,
+        triage_type=triage.triage_type,
+    )
 
     # Cost guardrail: check before the expensive build phase.
     paths = get_project_paths()

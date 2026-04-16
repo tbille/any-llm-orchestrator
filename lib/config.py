@@ -53,10 +53,10 @@ REPOS: tuple[RepoInfo, ...] = (
             "repo. Only the gateway provider/client code lives here."
         ),
         test_hints=(
-            "Run ONLY the tests related to your changes: "
+            "NEVER run the full test suite (e.g. `uv run pytest tests/unit` "
+            "or `uv run pytest`). The full suite is slow and runs in CI. "
+            "Run ONLY the specific test files related to your changes: "
             "uv run pytest tests/unit/<relevant_test_file> -x -q. "
-            "Do NOT run the full test suite during development -- it is slow "
-            "and the full suite runs automatically in CI. "
             "Do NOT run integration tests. "
             "For linting use: uv run ruff check . && uv run mypy."
         ),
@@ -72,10 +72,10 @@ REPOS: tuple[RepoInfo, ...] = (
             "to various LLM providers. Captures observability data."
         ),
         test_hints=(
-            "Run ONLY the tests related to your changes: "
+            "NEVER run the full test suite (e.g. `uv run pytest` without a "
+            "specific path). The full suite is slow and runs in CI. "
+            "Run ONLY the specific test files related to your changes: "
             "uv run pytest tests/<relevant_test_file> -x -q. "
-            "Do NOT run the full test suite during development -- it is slow "
-            "and the full suite runs automatically in CI. "
             "For linting: uv run ruff check . && uv run mypy."
         ),
         test_command="uv run pytest -x -q --timeout=60",
@@ -87,10 +87,10 @@ REPOS: tuple[RepoInfo, ...] = (
         language="rust",
         description="Rust SDK for communicating with the any-llm gateway.",
         test_hints=(
+            "NEVER run the full test suite (e.g. `cargo test --all-features` "
+            "without a filter). The full suite is slow and runs in CI. "
             "Run ONLY the tests related to your changes: "
             "cargo test <test_name_or_module> --all-features. "
-            "Do NOT run the full test suite during development -- it is slow "
-            "and the full suite runs automatically in CI. "
             "Lint: cargo clippy --all-features -- -D warnings && cargo fmt --check."
         ),
         test_command="cargo test --all-features",
@@ -102,10 +102,10 @@ REPOS: tuple[RepoInfo, ...] = (
         language="go",
         description="Go SDK for communicating with the any-llm gateway.",
         test_hints=(
+            "NEVER run the full test suite (e.g. `go test ./...`). "
+            "The full suite is slow and runs in CI. "
             "Run ONLY the tests in packages you changed: "
             "go test ./path/to/package -race -count=1. "
-            "Do NOT run the full test suite during development -- it is slow "
-            "and the full suite runs automatically in CI. "
             "Lint: golangci-lint run."
         ),
         test_command="go test ./... -race -count=1",
@@ -117,10 +117,11 @@ REPOS: tuple[RepoInfo, ...] = (
         language="typescript",
         description="TypeScript SDK for communicating with the any-llm gateway.",
         test_hints=(
+            "NEVER run the full test suite (e.g. `npm test` without args). "
+            "The full suite is slow and runs in CI. "
             "Run ONLY the tests related to your changes. Check package.json "
             "for the test runner (jest/vitest) and pass the relevant test "
-            "file paths. Do NOT run the full test suite during development -- "
-            "it is slow and the full suite runs automatically in CI. "
+            "file paths. "
             "Lint: npx biome check . or the lint script in package.json."
         ),
         test_command="npm test",
@@ -136,10 +137,10 @@ REPOS: tuple[RepoInfo, ...] = (
         ),
         default_branch="develop",
         test_hints=(
-            "Run ONLY the tests related to your changes: "
+            "NEVER run the full test suite (e.g. `uv run pytest` without a "
+            "specific path). The full suite is slow and runs in CI. "
+            "Run ONLY the specific test files related to your changes: "
             "uv run pytest tests/<relevant_test_file> -x -q. "
-            "Do NOT run the full test suite during development -- it is slow "
-            "and the full suite runs automatically in CI. "
             "For linting: uv run ruff check . && uv run mypy."
         ),
         test_command="uv run pytest -x -q --timeout=60",

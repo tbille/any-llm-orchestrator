@@ -196,6 +196,25 @@ async function ciCheck(slug, repo) {
   }
 }
 
+async function rebasePR(slug, repo) {
+  const btn = document.getElementById("rebase-btn-" + slug + "-" + repo);
+  if (btn) { btn.disabled = true; btn.textContent = "Rebasing..."; }
+  try {
+    const res = await fetch("/api/rebase", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slug, repo }),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      alert("Rebase failed: " + (data.error || "Unknown error"));
+      if (btn) { btn.disabled = false; btn.textContent = "\u21bb Rebase"; }
+    }
+  } catch (e) {
+    alert("Rebase request failed: " + e);
+    if (btn) { btn.disabled = false; btn.textContent = "\u21bb Rebase"; }
+  }
+}
+
 async function resumePipeline(slug, phase) {
   openMenuSlug = null;
   try {
@@ -304,7 +323,7 @@ function renderHistory(history, repoId) {
 }
 
 function buildPhaseBar(f, all_phases, phases_by_type, phase_labels) {
-  const applicable = phases_by_type[f.triage_type] || all_phases;
+  const applicable = f.applicable_phases || phases_by_type[f.triage_type] || all_phases;
   const repoProgress = f.repo_progress || {};
   const doneCount = Object.values(repoProgress).filter(p => p.step === "done").length;
   const totalRepos = (f.repos || []).length;
@@ -366,12 +385,15 @@ function buildRepoRows(f) {
     if (pr.url && (ciSt === "fail" || ciSt === "pending")) {
       repoActions += '<button class="action-btn btn-small" id="ci-btn-' + f.slug + '-' + r + '" onclick="ciCheck(\'' + f.slug + '\',\'' + r + '\')">\u21bb CI</button>';
     }
+    if (pr.url) {
+      repoActions += '<button class="action-btn btn-small" id="rebase-btn-' + f.slug + '-' + r + '" onclick="rebasePR(\'' + f.slug + '\',\'' + r + '\')">\u21bb Rebase</button>';
+    }
 
     return "<tr id=\"row-" + f.slug + "-" + r + "\">" +
       "<td><strong>" + r + "</strong> " + logSize + "</td>" +
       '<td><div class="repo-steps">' + stepsHtml + elapsed + histHtml + "</div></td>" +
       "<td>" + prLink + repoActions + "</td>" +
-      "<td>" + (pr.url ? '<span class="status-dot dot-' + ciSt + '"></span>' + ciSt : "") + "</td>" +
+      "<td>" + (pr.url ? (pr.needs_rebase ? '<span class="status-dot dot-rebase"></span>needs rebase · ' : '') + '<span class="status-dot dot-' + ciSt + '"></span>' + ciSt : "") + "</td>" +
       "</tr>" +
       (logHtml ? "<tr><td colspan='4'>" + logHtml + "</td></tr>" : "");
   }).join("");
@@ -412,7 +434,7 @@ function buildCardActions(f, all_phases, phases_by_type) {
   }
 
   // Resume dropdown
-  const applicable = phases_by_type[f.triage_type] || all_phases;
+  const applicable = f.applicable_phases || phases_by_type[f.triage_type] || all_phases;
   const currentPhase = f.current_phase || "";
   const anyFailed = Object.values(f.phases || {}).some(p => p.status === "failed");
   const isPaused = !hasActiveTmux && (anyFailed || ["done", ""].includes(buildPhase.status));

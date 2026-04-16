@@ -1,0 +1,104 @@
+{
+  "total_cost": 14.8063,
+  "total_input_tokens": 383,
+  "total_output_tokens": 105358,
+  "total_reasoning_tokens": 0,
+  "total_cache_read": 12803359,
+  "total_cache_write": 923001,
+  "sessions": 26,
+  "messages": 327,
+  "by_repo": {
+    "any-llm": {
+      "cost": 2.8335,
+      "input_tokens": 89,
+      "output_tokens": 20892,
+      "reasoning_tokens": 0,
+      "cache_read": 2454678,
+      "cache_write": 173341,
+      "messages": 71
+    },
+    "any-llm-rust": {
+      "cost": 1.5532,
+      "input_tokens": 43,
+      "output_tokens": 9649,
+      "reasoning_tokens": 0,
+      "cache_read": 1121338,
+      "cache_write": 120180,
+      "messages": 37
+    },
+    "any-llm-go": {
+      "cost": 1.4121,
+      "input_tokens": 37,
+      "output_tokens": 8988,
+      "reasoning_tokens": 0,
+      "cache_read": 991162,
+      "cache_write": 110657,
+      "messages": 31
+    },
+    "any-llm-ts": {
+      "cost": 2.0888,
+      "input_tokens": 76,
+      "output_tokens": 17416,
+      "reasoning_tokens": 0,
+      "cache_read": 1916832,
+      "cache_write": 111135,
+      "messages": 68
+    },
+    "any-llm-platform": {
+      "cost": 2.5623,
+      "input_tokens": 81,
+      "output_tokens": 23946,
+      "reasoning_tokens": 0,
+      "cache_read": 2333647,
+      "cache_write": 127433,
+      "messages": 71
+    }
+  },
+  "by_phase": {
+    "review": {
+      "cost": 3.7555,
+      "input_tokens": 47,
+      "output_tokens": 20670,
+      "reasoning_tokens": 0,
+      "cache_read": 3642301,
+      "cache_write": 226772,
+      "messages": 41
+    },
+    "engineer": {
+      "cost": 7.7207,
+      "input_tokens": 235,
+      "output_tokens": 57590,
+      "reasoning_tokens": 0,
+      "cache_read": 6207874,
+      "cache_write": 508137,
+      "messages": 195
+    },
+    "pr": {
+      "cost": 0.5759,
+      "input_tokens": 15,
+      "output_tokens": 3421,
+      "reasoning_tokens": 0,
+      "cache_read": 364253,
+      "cache_write": 49304,
+      "messages": 13
+    },
+    "ci-fix": {
+      "cost": 2.1533,
+      "input_tokens": 76,
+      "output_tokens": 19880,
+      "reasoning_tokens": 0,
+      "cache_read": 2245530,
+      "cache_write": 85305,
+      "messages": 70
+    },
+    "planning": {
+      "cost": 0.6009,
+      "input_tokens": 10,
+      "output_tokens": 3797,
+      "reasoning_tokens": 0,
+      "cache_read": 343401,
+      "cache_write": 53483,
+      "messages": 8
+    }
+  }
+}

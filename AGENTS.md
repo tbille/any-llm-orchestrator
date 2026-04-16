@@ -26,10 +26,10 @@ There are no build, test, lint, format, or typecheck commands for this repo itse
 
 ## Architecture
 
-- `orchestrate.py` — CLI entry point. Phases run sequentially: intake → PM → debate → design → architect → workspace setup → engineer (tmux) → code review → cross-review → PR creation. Supports `--headless` for non-interactive PM/debate.
+- `orchestrate.py` — CLI entry point. The intake classifier selects which spec-phase agents to invoke (pm, debate, designer, architect) based on the nature of the work. Purely technical features skip PM/designer. Phases run sequentially: intake → workspace → [selected spec phases] → engineer (tmux) → code review → cross-review → PR creation. Supports `--headless` for non-interactive PM/debate.
 - `dashboard.py` — Standalone HTTP server with inline HTML/JS. No build step.
 - `lib/config.py` — Repo registry, env-var tunables, path helpers. Source of truth for repo metadata. Each `RepoInfo` now includes `test_command` for pre-review build checks.
-- `lib/intake.py` — Fetches issues via `gh`, classifies via opencode headless mode. Parses opencode's `--format json` output as newline-delimited JSON events.
+- `lib/intake.py` — Fetches issues via `gh`, classifies via opencode headless mode. The classifier returns a `phases` list (subset of pm, debate, designer, architect) that controls which spec agents run. Parses opencode's `--format json` output as newline-delimited JSON events.
 - `lib/parse.py` — Structured output parsing for agent responses. Extracts JSON blocks, review verdicts, and cross-review repo lists. Replaces ad-hoc string matching.
 - `lib/workspace.py` — Clones repos to `repos/`, creates worktrees under `specs/<slug>/repos/`. Injects `AGENTS.md` into each worktree before the build phase.
 - `lib/engineer.py` — Launches per-repo pipelines as tmux panes. Each pane runs `uv run python lib/repo_runner.py <slug> <repo>`. Build phase has a configurable timeout.

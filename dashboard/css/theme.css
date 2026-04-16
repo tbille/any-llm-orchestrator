@@ -40,6 +40,7 @@ a:hover { text-decoration: underline; }
 .dot-done, .dot-pass { background: var(--green); }
 .dot-running, .dot-pending { background: var(--blue); }
 .dot-fail { background: var(--red); }
+.dot-rebase { background: var(--yellow); }
 .dot-none, .dot-skipped { background: var(--muted); opacity: 0.4; }
 
 /* Shared pulse animation */

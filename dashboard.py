@@ -391,6 +391,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._handle_ci_check()
         elif self.path == "/api/resume":
             self._handle_resume()
+        elif self.path == "/api/rebase":
+            self._handle_rebase()
         elif self.path == "/api/cancel":
             self._handle_cancel()
         else:
@@ -622,6 +624,54 @@ class DashboardHandler(BaseHTTPRequestHandler):
         cmd = (
             f"uv run python lib/repo_runner.py "
             f"{shlex.quote(slug)} {shlex.quote(repo)} --ci-check"
+        )
+
+        # Kill any existing session first.
+        subprocess.run(
+            ["tmux", "kill-session", "-t", session_name],
+            capture_output=True,
+        )
+
+        subprocess.run(
+            [
+                "tmux",
+                "new-session",
+                "-d",
+                "-s",
+                session_name,
+                "-c",
+                str(paths.root),
+                cmd,
+            ],
+            check=False,
+        )
+        _invalidate_cache()
+        self._json_status(202, {"status": "started", "slug": slug, "repo": repo})
+
+    def _handle_rebase(self) -> None:
+        """Rebase a repo's feature branch onto the latest base branch via tmux."""
+        import shlex
+
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        slug = payload.get("slug", "")
+        repo = payload.get("repo", "")
+        if not slug or not repo:
+            self._json_status(400, {"error": "Missing 'slug' or 'repo'"})
+            return
+
+        paths = get_project_paths()
+        wt_path = paths.worktree_path(slug, repo)
+        if not wt_path.exists():
+            self._json_status(404, {"error": f"Worktree not found for '{repo}'"})
+            return
+
+        session_name = f"rebase-{slug}-{repo}"
+        cmd = (
+            f"uv run python lib/repo_runner.py "
+            f"{shlex.quote(slug)} {shlex.quote(repo)} --rebase"
         )
 
         # Kill any existing session first.

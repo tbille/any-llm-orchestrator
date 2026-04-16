@@ -36,7 +36,8 @@ ALL_PHASES = (
     "cross-review-fix",
 )
 
-# Phases used per triage path.
+# Legacy phases per triage path (kept for backward compat with old
+# status.json files that don't have an ``applicable_phases`` field).
 PHASES_BY_TYPE = {
     "feature": ALL_PHASES,
     "complex-bug": (
@@ -55,6 +56,24 @@ PHASES_BY_TYPE = {
         "cross-review-fix",
     ),
 }
+
+
+def phases_for_triage(spec_phases: list[str]) -> tuple[str, ...]:
+    """Build the full ordered phase tuple from the spec-phase selection.
+
+    ``spec_phases`` is a subset of ``("pm", "debate", "designer",
+    "architect")`` chosen by the intake classifier.  The surrounding
+    infrastructure phases (intake, workspace, build, cross-review,
+    cross-review-fix) are always present.
+    """
+    return (
+        ("intake", "workspace")
+        + tuple(
+            p for p in ("pm", "debate", "designer", "architect") if p in spec_phases
+        )
+        + ("build", "cross-review", "cross-review-fix")
+    )
+
 
 PHASE_LABELS = {
     "intake": "Intake",
@@ -137,22 +156,34 @@ def init_status(
     triage_type: str,
     repos: list[str],
     paths: ProjectPaths,
+    *,
+    spec_phases: list[str] | None = None,
 ) -> dict:
-    """Create (or reset) the status file for a new feature."""
-    applicable = PHASES_BY_TYPE.get(triage_type, ALL_PHASES)
-    phases: dict[str, dict] = {}
+    """Create (or reset) the status file for a new feature.
+
+    When *spec_phases* is provided (the phases list from the triage
+    classifier), the applicable pipeline phases are computed from it.
+    Otherwise falls back to the legacy ``PHASES_BY_TYPE`` mapping.
+    """
+    if spec_phases is not None:
+        applicable = phases_for_triage(spec_phases)
+    else:
+        applicable = PHASES_BY_TYPE.get(triage_type, ALL_PHASES)
+
+    phase_map: dict[str, dict] = {}
     for phase in ALL_PHASES:
         if phase in applicable:
-            phases[phase] = {"status": "pending"}
+            phase_map[phase] = {"status": "pending"}
         else:
-            phases[phase] = {"status": "skipped"}
+            phase_map[phase] = {"status": "skipped"}
 
     data = {
         "slug": slug,
         "triage_type": triage_type,
         "repos": repos,
+        "applicable_phases": list(applicable),
         "current_phase": applicable[0],
-        "phases": phases,
+        "phases": phase_map,
         "created_at": _now(),
         "updated_at": _now(),
     }
@@ -453,21 +484,32 @@ _GH_TIMEOUT = 10  # seconds – prevents a hung gh call from blocking the API
 def _query_single_repo_pr(
     wt_path: Path,
 ) -> dict:
-    """Query ``gh`` for a single repo's PR URL and CI status.
+    """Query ``gh`` for a single repo's PR URL, CI status, and rebase state.
 
-    Returns ``{"url": ..., "ci": "pass"|"fail"|"pending"|"none"}``.
+    Returns ``{"url": ..., "ci": "pass"|"fail"|"pending"|"none",
+    "needs_rebase": bool}``.
     """
-    # Get PR URL.
+    # Get PR URL and merge-state in a single gh call.
     url: str | None = None
+    needs_rebase = False
     try:
         pr_result = subprocess.run(
-            ["gh", "pr", "view", "--json", "url", "--jq", ".url"],
+            ["gh", "pr", "view", "--json", "url,mergeStateStatus"],
             cwd=str(wt_path),
             capture_output=True,
             text=True,
             timeout=_GH_TIMEOUT,
         )
-        url = pr_result.stdout.strip() if pr_result.returncode == 0 else None
+        if pr_result.returncode == 0:
+            try:
+                pr_data = json.loads(pr_result.stdout)
+                url = pr_data.get("url")
+                merge_state = (pr_data.get("mergeStateStatus") or "").upper()
+                # BEHIND = branch is behind base, needs rebase.
+                # DIRTY  = merge conflicts exist, also needs rebase.
+                needs_rebase = merge_state in ("BEHIND", "DIRTY")
+            except json.JSONDecodeError:
+                url = None
     except subprocess.TimeoutExpired:
         url = None
 
@@ -507,7 +549,7 @@ def _query_single_repo_pr(
     except subprocess.TimeoutExpired:
         ci = "none"
 
-    return {"url": url, "ci": ci}
+    return {"url": url, "ci": ci, "needs_rebase": needs_rebase}
 
 
 def get_pr_info_for_feature(
@@ -515,9 +557,10 @@ def get_pr_info_for_feature(
     repo_names: list[str],
     paths: ProjectPaths,
 ) -> dict[str, dict]:
-    """Query ``gh`` for PR URL and check status per repo.
+    """Query ``gh`` for PR URL, check status, and rebase state per repo.
 
-    Returns a map of repo name -> {"url": ..., "ci": "pass"|"fail"|"pending"|"none"}.
+    Returns a map of repo name -> {"url": ..., "ci": "pass"|"fail"|"pending"|"none",
+    "needs_rebase": bool}.
 
     Each ``gh`` invocation is capped at :data:`_GH_TIMEOUT` seconds so that
     a single slow or unreachable call cannot block the dashboard API response.
@@ -529,7 +572,7 @@ def get_pr_info_for_feature(
     for name in repo_names:
         wt_path = paths.worktree_path(slug, name)
         if not wt_path.exists():
-            info[name] = {"url": None, "ci": "none"}
+            info[name] = {"url": None, "ci": "none", "needs_rebase": False}
         else:
             to_query[name] = wt_path
 
@@ -543,6 +586,6 @@ def get_pr_info_for_feature(
                 try:
                     info[name] = future.result(timeout=_GH_TIMEOUT + 2)
                 except Exception:
-                    info[name] = {"url": None, "ci": "none"}
+                    info[name] = {"url": None, "ci": "none", "needs_rebase": False}
 
     return info

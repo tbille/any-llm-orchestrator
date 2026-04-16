@@ -37,6 +37,7 @@ You are launched inside a repository worktree. Work only within this directory. 
 - Are there tests for the new functionality?
 - Do tests cover both happy path and error cases?
 - Are there edge case tests?
+- Note: Do NOT flag "full test suite not run" as an issue. Only targeted tests for changed files should be run; the full suite runs in CI.
 
 ### Error handling
 - Are errors propagated correctly?

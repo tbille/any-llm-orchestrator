@@ -1,0 +1,15 @@
+{
+  "type": "feature",
+  "repos": [
+    "any-llm",
+    "any-llm-rust",
+    "any-llm-go",
+    "any-llm-ts",
+    "any-llm-platform"
+  ],
+  "phases": [
+    "architect"
+  ],
+  "slug": "rename-auth-header-anyllm-key",
+  "reasoning": "The gateway PR #45 renamed the auth header from X-AnyLLM-Key to AnyLLM-Key and removed the x-api-key fallback. All SDK repos (Python, Rust, Go, TypeScript) and the platform need to update their header references to match. This is a coordinated but mechanically simple change across five repos \u2014 no product ambiguity or design decisions are needed, but an architect phase is warranted to map which files in each repo reference the old header names and plan the coordinated update."
+}

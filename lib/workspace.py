@@ -50,11 +50,17 @@ def ensure_repos_cloned(paths: ProjectPaths) -> None:
         dest = paths.repo_path(repo.name)
         if dest.exists() and (dest / ".git").exists():
             print(f"  [fetch] {repo.name} — updating from origin")
-            subprocess.run(
+            result = subprocess.run(
                 ["git", "fetch", "origin"],
                 cwd=str(dest),
                 capture_output=True,
+                text=True,
             )
+            if result.returncode != 0:
+                print(
+                    f"  [warn] fetch failed for {repo.name}: {result.stderr.strip()}",
+                    file=sys.stderr,
+                )
             continue
 
         with _repo_lock(paths, repo.name):
@@ -189,6 +195,99 @@ def create_worktrees(
     return result
 
 
+def update_worktrees(
+    slug: str,
+    repo_names: list[str],
+    paths: ProjectPaths,
+) -> None:
+    """Bring existing worktrees up to date with the latest upstream base branch.
+
+    For each worktree:
+    - Fetches the latest base branch from origin.
+    - Fast-forwards the local base branch pointer.
+    - If the worktree has no local commits beyond the base, hard-resets to
+      the latest base.
+    - If local commits exist, rebases the feature branch onto the updated
+      base.  On conflict the rebase is aborted and a warning is printed
+      (the engineer agent has its own rebase logic that can handle it
+      later).
+    """
+    for name in repo_names:
+        if name not in REPO_BY_NAME:
+            continue
+
+        wt_path = paths.worktree_path(slug, name)
+        repo_dir = paths.repo_path(name)
+
+        if not wt_path.exists() or not repo_dir.exists():
+            continue
+
+        repo_info = REPO_BY_NAME[name]
+        base_branch = repo_info.default_branch
+
+        with _repo_lock(paths, name):
+            # 1. Fetch latest base branch.
+            fetch = subprocess.run(
+                ["git", "fetch", "origin", base_branch],
+                cwd=str(repo_dir),
+                capture_output=True,
+                text=True,
+            )
+            if fetch.returncode != 0:
+                print(
+                    f"  [warn] fetch failed for {name}: {fetch.stderr.strip()}",
+                    file=sys.stderr,
+                )
+                continue
+
+            # 2. Fast-forward local base branch pointer.
+            subprocess.run(
+                ["git", "branch", "-f", base_branch, f"origin/{base_branch}"],
+                cwd=str(repo_dir),
+                capture_output=True,
+            )
+
+            # 3. Check for local commits beyond the base in the worktree.
+            log_result = subprocess.run(
+                ["git", "log", f"origin/{base_branch}..HEAD", "--oneline"],
+                cwd=str(wt_path),
+                capture_output=True,
+                text=True,
+            )
+            has_local_commits = bool(log_result.stdout.strip())
+
+            if not has_local_commits:
+                # No local work yet — just reset to latest base.
+                subprocess.run(
+                    ["git", "reset", "--hard", f"origin/{base_branch}"],
+                    cwd=str(wt_path),
+                    capture_output=True,
+                )
+                print(f"  [update] {name} — reset to latest {base_branch}")
+            else:
+                # Local commits exist — rebase onto updated base.
+                rebase = subprocess.run(
+                    ["git", "rebase", f"origin/{base_branch}"],
+                    cwd=str(wt_path),
+                    capture_output=True,
+                    text=True,
+                )
+                if rebase.returncode != 0:
+                    # Abort the failed rebase and warn.
+                    subprocess.run(
+                        ["git", "rebase", "--abort"],
+                        cwd=str(wt_path),
+                        capture_output=True,
+                    )
+                    print(
+                        f"  [warn] rebase failed for {name} — conflicts detected, "
+                        f"skipping (engineer agent can retry later)",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(f"  [update] {name} — rebased onto latest {base_branch}")
+
+
 def _git_worktree_add(
     repo_dir: Path,
     wt_path: Path,
@@ -261,7 +360,13 @@ def setup_engineer_context(
     if repo_info and repo_info.scope_notes:
         extra_sections += f"## Scope Notes\n\n{repo_info.scope_notes}\n\n---\n\n"
     if repo_info and repo_info.test_hints:
-        extra_sections += f"## Testing\n\n{repo_info.test_hints}\n\n---\n\n"
+        extra_sections += (
+            f"## Testing (IMPORTANT)\n\n"
+            f"**NEVER run the full test suite.** The full suite is slow and "
+            f"runs automatically in CI after you push. Only run targeted tests "
+            f"for the specific files you changed.\n\n"
+            f"{repo_info.test_hints}\n\n---\n\n"
+        )
 
     header = (
         f"# Implementation Spec: {slug}\n\n"

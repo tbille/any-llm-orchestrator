@@ -1,15 +1,12 @@
-"""Phase 2-3.6: Product Manager, PRD debate, design classification, and designer."""
+"""Phase 2-3.6: Product Manager, PRD debate, and designer."""
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 from pathlib import Path
 
-from lib.config import CLASSIFIER_TIMEOUT, ProjectPaths
-from lib.intake import _extract_reply
-from lib.parse import parse_classifier_json
+from lib.config import ProjectPaths
 
 
 # ── Phase 2: Product Manager (interactive TUI) ───────────────────────
@@ -196,95 +193,13 @@ def run_debate(slug: str, paths: ProjectPaths) -> Path:
     return prd_file
 
 
-# ── Phase 3.5: Design need classification (headless) ─────────────────
-
-_DESIGN_CLASSIFIER_PROMPT = """\
-Read the PRD below and determine if this feature needs product design work.
-
-Design IS needed when the feature involves:
-- User-facing behavior changes (UI, CLI output, error messages)
-- SDK API shape changes (new methods, changed signatures, new types)
-- Developer experience changes (new workflows, changed configuration)
-- Documentation-visible changes
-
-Design is NOT needed when:
-- The change is purely internal (refactoring, performance, infrastructure)
-- The fix is a straightforward bug with no API/UX impact
-- The change only affects tests or CI
-
-Respond with ONLY a JSON object:
-{{"needs_design": true/false, "reasoning": "one sentence"}}
-
-## PRD content
-
-{prd_content}
-"""
-
-
-_DESIGN_CLASSIFIER_TIMEOUT = CLASSIFIER_TIMEOUT
-
-
-def classify_design_need(slug: str, paths: ProjectPaths) -> bool:
-    """Headless call to determine whether the designer phase is needed."""
-    prd_file = paths.spec_file(slug, "prd.md")
-    if not prd_file.exists():
-        return False
-
-    prd_content = prd_file.read_text(encoding="utf-8")
-    prompt = _DESIGN_CLASSIFIER_PROMPT.format(prd_content=prd_content)
-
-    # Scope to the spec directory -- this classifier only needs the PRD
-    # content (which is already inlined in the prompt), not project-wide
-    # file access.
-    spec_dir = paths.spec_dir(slug)
-
-    try:
-        result = subprocess.run(
-            [
-                "opencode",
-                "run",
-                "--dir",
-                str(spec_dir),
-                "--dangerously-skip-permissions",
-                "--format",
-                "json",
-                prompt,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=_DESIGN_CLASSIFIER_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired:
-        print(
-            f"  [WARN] Design classifier timed out after "
-            f"{_DESIGN_CLASSIFIER_TIMEOUT}s; assuming design needed.",
-            file=sys.stderr,
-        )
-        return True
-
-    # Use the same JSON event stream parser as the triage classifier.
-    reply = _extract_reply(result.stdout)
-
-    # Extract the JSON object from the reply text using robust parsing.
-    data = parse_classifier_json(reply, required_keys=["needs_design"])
-    if data is not None:
-        needs = data.get("needs_design", False)
-        reasoning = data.get("reasoning", "")
-        print(f"  Design needed: {needs} -- {reasoning}")
-        return bool(needs)
-
-    # Default: assume design is needed (safer).
-    print("  Could not parse design classifier output; assuming design needed.")
-    return True
-
-
 # ── Phase 3.6: Product Designer (interactive TUI, conditional) ────────
 
 
 def run_designer(slug: str, paths: ProjectPaths) -> Path:
     """Launch the designer agent to create design proposals.
 
-    Only called when ``classify_design_need`` returns True.
+    Only called when ``"designer"`` is in the triage phases list.
     """
     spec_dir = paths.spec_dir(slug)
     design_file = paths.spec_file(slug, "design.md")

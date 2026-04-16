@@ -93,9 +93,9 @@ Ordered steps the engineer should follow.
 ## Testing Requirements
 What tests to write. Include both unit and integration test expectations.
 
-**Important:** Specify which test files/directories map to the changed source
-files so engineers can run targeted tests during development.  The full test
-suite runs in CI; during development, only impacted tests should be executed.
+**IMPORTANT:** Engineers must NEVER run the full test suite -- it runs in CI.
+Specify exactly which test files/directories to run for each changed source
+file so engineers can run only targeted tests.
 ```
 
 ## Guidelines

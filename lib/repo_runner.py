@@ -196,14 +196,18 @@ def step_engineer(
         message = (
             f"Fix the issues found in the attached file(s). This is a {lang} project. "
             f"If a review file is attached, address the review feedback. "
-            f"If a build-failures file is attached, fix the failing tests."
+            f"If a build-failures file is attached, fix the failing tests. "
+            f"NEVER run the full test suite. Only run the specific test files "
+            f"related to the files you changed. The full suite runs in CI."
             f"{scope_note}{commit_instructions}{repo_scope}"
         )
     else:
         message = (
             f"Implement the feature described in the attached spec for this "
             f"{lang} project. Follow the repository's existing patterns and "
-            f"conventions. Write tests for your changes."
+            f"conventions. Write tests for your changes. "
+            f"NEVER run the full test suite. Only run the specific test files "
+            f"related to the files you changed. The full suite runs in CI."
             f"{scope_note}{commit_instructions}{repo_scope}"
         )
 
@@ -217,7 +221,9 @@ def step_engineer(
             file_args += ["-f", str(investigation_file)]
         message = (
             f"Fix the bug described in the attached issue for this {lang} project. "
-            f"Follow the repository's existing patterns."
+            f"Follow the repository's existing patterns. "
+            f"NEVER run the full test suite. Only run the specific test files "
+            f"related to the files you changed. The full suite runs in CI."
             f"{scope_note}{commit_instructions}{repo_scope}"
         )
 
@@ -911,14 +917,19 @@ def step_ci_watch(
         if ci_log_file.exists():
             file_args += ["-f", str(ci_log_file)]
 
+        test_note = ""
+        if repo_info and repo_info.test_hints:
+            test_note = f" TESTING: {repo_info.test_hints}"
+
         repo_scope = _REPO_SCOPE_INSTRUCTION.format(repo_name=repo_name)
         message = (
             f"The CI pipeline is failing for this {lang} project. "
             f"The attached file lists the failed checks. "
-            f"Investigate the failures by running the linter and tests locally. "
-            f"Fix the issues. Make sure the linter passes and all tests pass. "
+            f"Investigate the failures by reading the error output carefully. "
+            f"Fix the issues. Run only the specific failing tests to verify "
+            f"your fix -- NEVER run the full test suite. "
             f"Commit your fixes and push."
-            f"{repo_scope}"
+            f"{test_note}{repo_scope}"
         )
 
         print(f"  [{repo_name}] Fixing CI (round {fix_round + 1})...")
@@ -1386,7 +1397,9 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
         f"make the requested changes. Pay special attention to the inline code "
         f"comments in the 'Inline Code Comments' section — these point to "
         f"specific files and lines that need changes. "
-        f"Commit your fixes in atomic commits."
+        f"Commit your fixes in atomic commits. "
+        f"NEVER run the full test suite. Only run the specific test files "
+        f"related to the files you changed. The full suite runs in CI."
         f"{test_note}{repo_scope}"
     )
 
@@ -1532,7 +1545,9 @@ def step_fix_cross_review(slug: str, repo_name: str, paths: ProjectPaths) -> Non
         f"The cross-repository review found issues that need fixing in this "
         f"{lang} repository ({repo_name}). The attached file contains ONLY "
         f"the findings relevant to this repository. Fix each finding. "
-        f"Commit your fixes in atomic commits and push."
+        f"Commit your fixes in atomic commits and push. "
+        f"NEVER run the full test suite. Only run the specific test files "
+        f"related to the files you changed. The full suite runs in CI."
         f"{test_note}{repo_scope}"
     )
 
@@ -1737,12 +1752,22 @@ if __name__ == "__main__":
         update_repo_step(sys.argv[1], sys.argv[2], "ci-watch", paths)
         step_ci_watch(sys.argv[1], sys.argv[2], paths)
         update_repo_step(sys.argv[1], sys.argv[2], "done", paths)
+    elif flag == "--rebase":
+        paths = get_project_paths()
+        _slug, _repo = sys.argv[1], sys.argv[2]
+        print(f"  [{_repo}] Starting rebase onto base branch...")
+        ok = step_rebase_on_base(_slug, _repo, paths)
+        if ok:
+            print(f"  [{_repo}] Rebase completed successfully.")
+        else:
+            print(f"  [{_repo}] Rebase failed.", file=sys.stderr)
+            sys.exit(1)
     elif len(sys.argv) == 3:
         run_repo_pipeline(sys.argv[1], sys.argv[2])
     else:
         print(
             f"Usage: {sys.argv[0]} <slug> <repo-name> "
-            f"[--fix-cross-review|--fix-pr|--ci-check]",
+            f"[--fix-cross-review|--fix-pr|--ci-check|--rebase]",
             file=sys.stderr,
         )
         sys.exit(1)

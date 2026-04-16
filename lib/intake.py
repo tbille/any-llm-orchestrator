@@ -16,6 +16,37 @@ from lib.config import CLASSIFIER_TIMEOUT, ECOSYSTEM_CONTEXT, REPO_BY_NAME, Proj
 
 TRIAGE_TYPES = ("simple-bug", "complex-bug", "feature")
 
+# Spec-phase agents the classifier can select for a feature.
+SPEC_PHASES = ("pm", "debate", "designer", "architect")
+
+# Default spec phases per triage type (used when the classifier doesn't
+# return an explicit phases list, or for backward-compatible resume).
+_DEFAULT_PHASES: dict[str, list[str]] = {
+    "feature": ["pm", "debate", "designer", "architect"],
+    "complex-bug": ["architect"],
+    "simple-bug": [],
+}
+
+
+def _normalize_phases(phases: list[str], triage_type: str) -> list[str]:
+    """Validate and enforce invariants on the spec-phase list.
+
+    - Strip unknown phase names.
+    - Enforce: ``"pm"`` implies ``"debate"``; ``"debate"`` without ``"pm"``
+      is removed.
+    - Preserve the canonical order defined by ``SPEC_PHASES``.
+    """
+    valid = [p for p in phases if p in SPEC_PHASES]
+
+    # pm <-> debate invariant
+    if "pm" in valid and "debate" not in valid:
+        valid.append("debate")
+    if "debate" in valid and "pm" not in valid:
+        valid.remove("debate")
+
+    # Re-order to canonical sequence.
+    return [p for p in SPEC_PHASES if p in valid]
+
 
 @dataclass
 class TriageResult:
@@ -24,6 +55,7 @@ class TriageResult:
     slug: str
     reasoning: str
     raw_input: str  # original issue body or prompt
+    phases: list[str] | None = None  # subset of SPEC_PHASES; None = infer
 
     def __post_init__(self) -> None:
         if self.triage_type not in TRIAGE_TYPES:
@@ -34,6 +66,11 @@ class TriageResult:
         unknown = [r for r in self.repos if r not in REPO_BY_NAME]
         if unknown:
             raise ValueError(f"Unknown repos in triage: {unknown}")
+
+        # Resolve phases: use explicit value, or fall back to type default.
+        if self.phases is None:
+            self.phases = list(_DEFAULT_PHASES.get(self.triage_type, []))
+        self.phases = _normalize_phases(self.phases, self.triage_type)
 
 
 # ── Issue fetching ────────────────────────────────────────────────────
@@ -123,6 +160,7 @@ Read the input below and classify it. Respond with ONLY a JSON object, no markdo
 {{
   "type": "simple-bug" | "complex-bug" | "feature",
   "repos": ["<repo-name>", ...],
+  "phases": ["<phase>", ...],
   "slug": "<short-kebab-case-slug>",
   "reasoning": "<one paragraph>"
 }}
@@ -136,6 +174,27 @@ Read the input below and classify it. Respond with ONLY a JSON object, no markdo
   or requires coordinated changes across repos.
 - **feature**: New functionality, behavioral change, or enhancement that needs
   product requirements and possibly design work.
+
+### Phase selection rules
+
+The `phases` array controls which spec-phase agents run before engineering.
+Choose from: `"pm"`, `"debate"`, `"designer"`, `"architect"`.
+
+- **simple-bug**: always `[]` (no spec phases needed).
+- **complex-bug**: typically `["architect"]`.
+- **feature**: pick the subset that fits:
+  - Include `"pm"` (and `"debate"`) when there is product ambiguity, user-facing
+    scope decisions, or trade-offs that need a Product Requirements Document.
+  - Include `"designer"` when the change involves user-facing API shape changes,
+    SDK ergonomics, CLI/configuration UX, error message design, or documentation
+    patterns. Omit it for purely internal/infrastructure changes.
+  - Include `"architect"` when implementation planning is needed (almost always).
+    May be omitted only for trivial single-file changes.
+  - A purely technical feature (refactoring, performance, infra, CI, internal
+    plumbing) may only need `["architect"]` -- skip pm/debate/designer.
+
+**Constraint**: `"pm"` and `"debate"` are always paired. If you include `"pm"`,
+also include `"debate"`. Never include `"debate"` without `"pm"`.
 
 ### Repo names (use EXACTLY these)
 any-llm, gateway, any-llm-rust, any-llm-go, any-llm-ts, any-llm-platform
@@ -231,30 +290,39 @@ def _parse_triage_json(text: str, raw_input: str) -> TriageResult:
     if data is None:
         _die(f"Classifier did not return valid JSON.\nRaw output:\n{text}")
 
+    # Phases may be absent (old-style classifier response).  TriageResult
+    # will fall back to _DEFAULT_PHASES[triage_type] when phases is None.
+    phases = data.get("phases")
+    if not isinstance(phases, list):
+        phases = None
+
     return TriageResult(
         triage_type=data["type"],
         repos=data["repos"],
         slug=data["slug"],
         reasoning=data.get("reasoning", ""),
         raw_input=raw_input,
+        phases=phases,
     )
 
 
 # ── User confirmation ────────────────────────────────────────────────
 
 _TYPE_LABELS = {
-    "simple-bug": "Simple bug   (skip PM/architect, straight to engineer)",
-    "complex-bug": "Complex bug  (skip PM, run lightweight architect)",
-    "feature": "Feature      (full pipeline: PM -> debate -> designer? -> architect)",
+    "simple-bug": "Simple bug   (straight to engineer)",
+    "complex-bug": "Complex bug  (phases selected by classifier)",
+    "feature": "Feature      (phases selected by classifier)",
 }
 
 
 def confirm_triage(result: TriageResult) -> TriageResult:
     """Show the triage to the user and allow override."""
+    phases_str = ", ".join(result.phases) if result.phases else "(none)"
     print("\n── Triage Result ──────────────────────────────────────")
     print(f"  Type:    {result.triage_type}")
     print(f"  Slug:    {result.slug}")
     print(f"  Repos:   {', '.join(result.repos)}")
+    print(f"  Phases:  {phases_str}")
     print(f"  Reason:  {result.reasoning}")
     print("──────────────────────────────────────────────────────\n")
 
@@ -281,6 +349,14 @@ def confirm_triage(result: TriageResult) -> TriageResult:
         else result.repos
     )
 
+    print(f"\nAvailable phases: {', '.join(SPEC_PHASES)}")
+    new_phases_raw = input(f"Phases (comma-separated) [{phases_str}]: ").strip()
+    new_phases: list[str] | None
+    if new_phases_raw:
+        new_phases = [p.strip() for p in new_phases_raw.split(",") if p.strip()]
+    else:
+        new_phases = result.phases
+
     new_slug = input(f"Slug [{result.slug}]: ").strip() or result.slug
 
     return TriageResult(
@@ -289,6 +365,7 @@ def confirm_triage(result: TriageResult) -> TriageResult:
         slug=new_slug,
         reasoning=result.reasoning,
         raw_input=result.raw_input,
+        phases=new_phases,
     )
 
 
@@ -312,6 +389,7 @@ def save_triage(slug: str, triage: TriageResult, paths: ProjectPaths) -> Path:
             {
                 "type": triage.triage_type,
                 "repos": triage.repos,
+                "phases": triage.phases,
                 "slug": triage.slug,
                 "reasoning": triage.reasoning,
             },
@@ -323,7 +401,12 @@ def save_triage(slug: str, triage: TriageResult, paths: ProjectPaths) -> Path:
 
 
 def load_triage(slug: str, paths: ProjectPaths) -> TriageResult | None:
-    """Load a previously saved triage, or None if it does not exist."""
+    """Load a previously saved triage, or None if it does not exist.
+
+    Old triage files without a ``phases`` key are handled gracefully:
+    ``TriageResult.__post_init__`` infers default phases from the
+    triage type.
+    """
     path = paths.spec_file(slug, "triage.json")
     if not path.exists():
         return None
@@ -332,12 +415,19 @@ def load_triage(slug: str, paths: ProjectPaths) -> TriageResult | None:
     raw_input = (
         raw_input_path.read_text(encoding="utf-8") if raw_input_path.exists() else ""
     )
+
+    # phases may be absent in old triage files; None triggers default.
+    phases = data.get("phases")
+    if not isinstance(phases, list):
+        phases = None
+
     return TriageResult(
         triage_type=data["type"],
         repos=data["repos"],
         slug=data["slug"],
         reasoning=data.get("reasoning", ""),
         raw_input=raw_input,
+        phases=phases,
     )
 
 
