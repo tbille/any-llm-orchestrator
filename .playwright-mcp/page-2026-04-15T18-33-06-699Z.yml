@@ -1,8 +1,0 @@
-- generic [active] [ref=e1]:
-  - generic [ref=e2]:
-    - heading "any-llm-world" [level=1] [ref=e3]
-    - generic [ref=e4]:
-      - generic [ref=e5]: Notifications on
-      - button "Hide logs" [ref=e6] [cursor=pointer]
-      - text: "Auto-refresh: 5s ·"
-  - generic [ref=e8]: Loading...
