@@ -18,3 +18,9 @@ specs/*/logs/
 
 # Status lock files
 specs/*/.status.lock
+
+# Archived specs
+@specs/
+
+# Playwright MCP artifacts
+.playwright-mcp/

@@ -20,7 +20,7 @@ const PHASE_NOTIFY_LABELS = {
 // ── State ───────────────────────────────────────────────
 
 let prevData = null;
-let logsVisible = localStorage.getItem("logsVisible") !== "false";
+const expandedLogs = new Set();  // tracks "slug-repo" keys for expanded log tails
 const notified = new Set();
 let consecutiveFailures = 0;
 let activeLogModal = null;  // { slug, repo, eventSource }
@@ -105,18 +105,24 @@ function updateNotifStatus() {
   }
 }
 
-// ── Log toggle ──────────────────────────────────────────
+// ── Per-repo log toggle ─────────────────────────────────
 
-function toggleLogs() {
-  logsVisible = !logsVisible;
-  localStorage.setItem("logsVisible", logsVisible);
-  document.getElementById("app").classList.toggle("logs-hidden", !logsVisible);
-  updateLogToggle();
-}
+function toggleRepoLog(slug, repo) {
+  const key = slug + "-" + repo;
+  const isExpanded = expandedLogs.has(key);
+  if (isExpanded) {
+    expandedLogs.delete(key);
+  } else {
+    expandedLogs.add(key);
+  }
 
-function updateLogToggle() {
-  const btn = document.getElementById("log-toggle-btn");
-  if (btn) btn.textContent = logsVisible ? "Hide logs" : "Show logs";
+  // Update the log tail row visibility.
+  const logRow = document.getElementById("log-row-" + slug + "-" + repo);
+  if (logRow) logRow.style.display = isExpanded ? "none" : "";
+
+  // Update the chevron text.
+  const chevron = document.getElementById("chevron-" + slug + "-" + repo);
+  if (chevron) chevron.textContent = isExpanded ? "\u25b8" : "\u25be";
 }
 
 // ── Filter ──────────────────────────────────────────────
@@ -354,7 +360,13 @@ function buildRepoRows(f) {
     const logLines = (log.last_lines || []).map(escapeHtml).join("\n");
     const logSize = log.size_bytes ? '<span class="log-size">' + fmtSize(log.size_bytes) + "</span>" : "";
     const logOnclick = 'openLogModal(\'' + f.slug + '\',\'' + r + '\')';
-    const logHtml = logLines ? '<div class="log-tail" onclick="' + logOnclick + '" title="Click to expand">' + logLines + "</div>" : "";
+    const logHtml = logLines ? '<div class="log-tail" onclick="' + logOnclick + '" title="Click to open full log">' + logLines + "</div>" : "";
+
+    const logKey = f.slug + "-" + r;
+    const isExpanded = expandedLogs.has(logKey);
+    const chevronHtml = logLines
+      ? '<span class="log-chevron" id="chevron-' + f.slug + '-' + r + '" onclick="event.stopPropagation();toggleRepoLog(\'' + f.slug + '\',\'' + r + '\')">' + (isExpanded ? "\u25be" : "\u25b8") + "</span>"
+      : "";
 
     const progress = repoProgress[r] || {};
     const currentStep = progress.step || "";
@@ -390,12 +402,12 @@ function buildRepoRows(f) {
     }
 
     return "<tr id=\"row-" + f.slug + "-" + r + "\">" +
-      "<td><strong>" + r + "</strong> " + logSize + "</td>" +
+      "<td>" + chevronHtml + "<strong>" + r + "</strong> " + logSize + "</td>" +
       '<td><div class="repo-steps">' + stepsHtml + elapsed + histHtml + "</div></td>" +
       "<td>" + prLink + repoActions + "</td>" +
       "<td>" + (pr.url ? (pr.needs_rebase ? '<span class="status-dot dot-rebase"></span>needs rebase · ' : '') + '<span class="status-dot dot-' + ciSt + '"></span>' + ciSt : "") + "</td>" +
       "</tr>" +
-      (logHtml ? "<tr><td colspan='4'>" + logHtml + "</td></tr>" : "");
+      (logHtml ? '<tr id="log-row-' + f.slug + '-' + r + '" style="display:' + (isExpanded ? "" : "none") + '"><td colspan="4">' + logHtml + "</td></tr>" : "");
   }).join("");
 }
 
@@ -480,18 +492,25 @@ function buildCard(f, all_phases, phases_by_type, phase_labels) {
 function patchSection(card, sectionName, newHtml) {
   const el = card.querySelector('[data-section="' + sectionName + '"]');
   if (!el) return;
-  // Only update if content changed.
-  if (el.innerHTML !== newHtml) {
-    // Preserve expanded history toggles.
+    // Only update if content changed.
+    if (el.innerHTML !== newHtml) {
+    // Preserve expanded history toggles and log tail visibility.
     if (sectionName === "repos") {
-      const expanded = new Set();
+      const expandedHist = new Set();
       el.querySelectorAll(".step-history").forEach(sh => {
-        if (sh.style.display !== "none") expanded.add(sh.id);
+        if (sh.style.display !== "none") expandedHist.add(sh.id);
       });
       el.innerHTML = newHtml;
-      expanded.forEach(id => {
+      expandedHist.forEach(id => {
         const restored = document.getElementById(id);
         if (restored) restored.style.display = "";
+      });
+      // Restore per-repo log tail visibility from expandedLogs state.
+      expandedLogs.forEach(key => {
+        const logRow = document.getElementById("log-row-" + key);
+        if (logRow) logRow.style.display = "";
+        const chevron = document.getElementById("chevron-" + key);
+        if (chevron) chevron.textContent = "\u25be";
       });
     } else {
       el.innerHTML = newHtml;
@@ -574,8 +593,6 @@ async function refresh() {
     consecutiveFailures = 0;
     hideError();
     render(data);
-    document.getElementById("app").classList.toggle("logs-hidden", !logsVisible);
-    updateLogToggle();
     checkNotifications(data.features || []);
     document.getElementById("updated").textContent = new Date().toLocaleTimeString();
     applyFilter();

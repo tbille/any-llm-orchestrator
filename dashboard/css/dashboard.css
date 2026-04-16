@@ -76,17 +76,17 @@ h1 { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
 }
 .log-tail:hover { color: var(--text); }
 .log-tail.expanded { max-height: none; overflow: auto; }
-.logs-hidden .log-tail { display: none; }
 .log-size { font-size: 11px; color: var(--muted); font-family: monospace; }
 .log-active { color: var(--green); }
 .log-idle { color: var(--yellow); }
 .log-phase { font-size: 10px; padding: 1px 5px; border-radius: 3px; background: rgba(139,148,158,0.12); color: var(--muted); margin-left: 6px; }
-.log-toggle {
-  font-size: 12px; padding: 3px 10px; border-radius: 4px; cursor: pointer;
-  background: rgba(139,148,158,0.1); color: var(--muted);
-  border: 1px solid var(--border); font-family: var(--font-sans);
+/* Per-repo log chevron */
+.log-chevron {
+  cursor: pointer; color: var(--muted); margin-right: 6px;
+  user-select: none; font-size: 13px; display: inline-block;
+  transition: color 0.15s;
 }
-.log-toggle:hover { background: rgba(139,148,158,0.2); color: var(--text); }
+.log-chevron:hover { color: var(--accent); }
 
 /* Per-repo build steps */
 .repo-steps { display: flex; gap: 3px; align-items: center; flex-wrap: wrap; }
