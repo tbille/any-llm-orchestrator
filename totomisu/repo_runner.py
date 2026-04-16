@@ -2,8 +2,8 @@
 
 Runs inside a single tmux pane. Each repo flows independently.
 
-Usage (called by the orchestrator, not directly):
-    uv run lib/repo_runner.py <slug> <repo-name>
+Usage (called by the orchestrator via the hidden CLI subcommand):
+    totomisu _repo-runner <slug> <repo-name>
 """
 
 from __future__ import annotations
@@ -14,12 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-# Ensure project root is on sys.path when run as a script.
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
-
-from lib.config import (
+from totomisu.config import (
     CAVEMAN_PROMPT,
     CI_POLL_INTERVAL,
     MAX_CI_FIX_ROUNDS,
@@ -29,8 +24,8 @@ from lib.config import (
     ProjectPaths,
     get_project_paths,
 )
-from lib.parse import ReviewVerdict, parse_review_verdict
-from lib.status import update_repo_step
+from totomisu.parse import ReviewVerdict, parse_review_verdict
+from totomisu.status import update_repo_step
 
 
 # ── Addressed-comments manifest ──────────────────────────────────────
@@ -669,7 +664,7 @@ def _try_deterministic_pr(
     Returns True on success, False if the caller should fall back to
     the AI agent (e.g. the repo has a complex PR template).
     """
-    from lib.pr import _find_pr_template
+    from totomisu.pr import _find_pr_template
 
     # If the repo has a PR template, fall back to AI to fill it properly.
     template = _find_pr_template(wt_path)
@@ -828,7 +823,7 @@ def step_pr(
     if spec_file.exists():
         file_args += ["-f", str(spec_file)]
 
-    from lib.pr import _find_pr_template
+    from totomisu.pr import _find_pr_template
 
     template = _find_pr_template(wt_path)
     template_instruction = ""
@@ -877,7 +872,7 @@ def step_ci_watch(
     poll_interval: int = CI_POLL_INTERVAL,
 ) -> None:
     """Poll CI and fix failures."""
-    from lib.pr import _get_ci_status, _collect_ci_failure_logs
+    from totomisu.pr import _get_ci_status, _collect_ci_failure_logs
 
     wt_path = paths.worktree_path(slug, repo_name)
 
@@ -1741,6 +1736,8 @@ def run_repo_pipeline(
 
 
 # ── CLI entry point ───────────────────────────────────────────────────
+# Primary dispatch is via ``totomisu _repo-runner`` (see cli.py).
+# This block is kept as a fallback for ``python -m totomisu.repo_runner``.
 if __name__ == "__main__":
     flag = sys.argv[3] if len(sys.argv) >= 4 else None
     if flag == "--fix-cross-review":
@@ -1766,7 +1763,7 @@ if __name__ == "__main__":
         run_repo_pipeline(sys.argv[1], sys.argv[2])
     else:
         print(
-            f"Usage: {sys.argv[0]} <slug> <repo-name> "
+            f"Usage: totomisu _repo-runner <slug> <repo-name> "
             f"[--fix-cross-review|--fix-pr|--ci-check|--rebase]",
             file=sys.stderr,
         )

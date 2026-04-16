@@ -15,7 +15,7 @@ from collections.abc import Generator
 from datetime import datetime, timezone
 from pathlib import Path
 
-from lib.config import ProjectPaths
+from totomisu.config import ProjectPaths
 
 
 # ── Phase definitions ─────────────────────────────────────────────────

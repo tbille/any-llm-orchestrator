@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from lib.config import ProjectPaths
+from totomisu.config import ProjectPaths
 
 
 # ── Phase 2: Product Manager (interactive TUI) ───────────────────────

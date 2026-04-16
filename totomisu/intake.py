@@ -9,7 +9,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from lib.config import CLASSIFIER_TIMEOUT, ECOSYSTEM_CONTEXT, REPO_BY_NAME, ProjectPaths
+from totomisu.config import (
+    CLASSIFIER_TIMEOUT,
+    ECOSYSTEM_CONTEXT,
+    REPO_BY_NAME,
+    ProjectPaths,
+)
 
 
 # ── Data types ────────────────────────────────────────────────────────
@@ -284,7 +289,7 @@ def _extract_reply(raw_output: str) -> str:
 
 def _parse_triage_json(text: str, raw_input: str) -> TriageResult:
     """Extract the JSON object from the classifier's reply."""
-    from lib.parse import parse_classifier_json
+    from totomisu.parse import parse_classifier_json
 
     data = parse_classifier_json(text, required_keys=["type", "repos", "slug"])
     if data is None:

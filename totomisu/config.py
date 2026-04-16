@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
+
+
+# ── Workspace marker ─────────────────────────────────────────────────
+# Written by ``totomisu init`` in the workspace root.
+WORKSPACE_MARKER = ".totomisu"
 
 
 @dataclass(frozen=True)
@@ -275,7 +282,70 @@ class ProjectPaths:
         self.logs_dir(slug).mkdir(parents=True, exist_ok=True)
 
 
+def _find_workspace_root() -> Path | None:
+    """Walk up from cwd looking for the ``.totomisu`` marker file."""
+    cur = Path.cwd().resolve()
+    for parent in [cur, *cur.parents]:
+        if (parent / WORKSPACE_MARKER).exists():
+            return parent
+    return None
+
+
+def _read_global_config() -> Path | None:
+    """Read the workspace path from ``~/.config/totomisu/config.json``."""
+    cfg = Path.home() / ".config" / "totomisu" / "config.json"
+    if cfg.exists():
+        try:
+            data = json.loads(cfg.read_text())
+            ws = Path(data["workspace"])
+            if (ws / WORKSPACE_MARKER).exists():
+                return ws
+        except (json.JSONDecodeError, KeyError, OSError):
+            pass
+    return None
+
+
 def get_project_paths() -> ProjectPaths:
-    """Return paths rooted at the directory containing this project."""
-    root = Path(__file__).resolve().parent.parent
-    return ProjectPaths(root=root)
+    """Return paths rooted at the active workspace.
+
+    Resolution order:
+      1. ``$TOTOMISU_WORKSPACE`` env var
+      2. Walk up from cwd looking for ``.totomisu`` marker
+      3. ``~/.config/totomisu/config.json``
+    """
+    # 1. Env var
+    env_ws = os.environ.get("TOTOMISU_WORKSPACE")
+    if env_ws:
+        root = Path(env_ws).resolve()
+        if (root / WORKSPACE_MARKER).exists():
+            return ProjectPaths(root=root)
+
+    # 2. Walk up from cwd
+    root = _find_workspace_root()
+    if root is not None:
+        return ProjectPaths(root=root)
+
+    # 3. Global config
+    root = _read_global_config()
+    if root is not None:
+        return ProjectPaths(root=root)
+
+    # Fallback: error with guidance.
+    raise SystemExit(
+        "[ERROR] No totomisu workspace found.\n"
+        "Run `totomisu init` to create one, or set $TOTOMISU_WORKSPACE."
+    )
+
+
+def get_package_data_path() -> Path:
+    """Return the path to bundled package data (agents, dashboard assets).
+
+    Uses ``importlib.resources`` to locate the ``totomisu/data`` directory,
+    falling back to a ``__file__``-relative path for editable installs.
+    """
+    try:
+        ref = resources.files("totomisu") / "data"
+        # Materialise to a real path (works for both installed and editable).
+        return Path(str(ref))
+    except (TypeError, FileNotFoundError):
+        return Path(__file__).resolve().parent / "data"

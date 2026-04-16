@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from lib.config import REPO_BY_NAME, ProjectPaths
+from totomisu.config import REPO_BY_NAME, ProjectPaths
 
 
 def run_architect(

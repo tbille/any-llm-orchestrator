@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from collections.abc import Generator
 from pathlib import Path
 
-from lib.config import REPO_BY_NAME, REPOS, ProjectPaths
+from totomisu.config import REPO_BY_NAME, REPOS, ProjectPaths
 
 
 # ── File locking (for parallel orchestrator safety) ───────────────────

@@ -1,20 +1,30 @@
-"""Main CLI entry point for the any-llm-world multi-repo orchestrator.
+"""Main CLI entry point for totomisu -- the any-llm multi-repo orchestrator.
 
 Usage:
-    uv run orchestrate.py --issue https://github.com/mozilla-ai/any-llm/issues/123
-    uv run orchestrate.py --prompt "Add streaming support to all SDKs"
-    uv run orchestrate.py --resume <slug>
-    uv run orchestrate.py --resume <slug> --skip-to build
+    totomisu init                              # set up a new workspace
+    totomisu run --issue <url>                 # start from a GitHub issue
+    totomisu run --prompt "description"        # start from a text prompt
+    totomisu run --resume <slug>               # resume a previous run
+    totomisu run --resume <slug> --skip-to build
+    totomisu dashboard [--port 8080]           # launch the web dashboard
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
-from lib.config import get_project_paths
-from lib.intake import (
+from totomisu.config import (
+    REPOS,
+    WORKSPACE_MARKER,
+    get_package_data_path,
+    get_project_paths,
+)
+from totomisu.intake import (
     TriageResult,
     classify,
     confirm_triage,
@@ -24,7 +34,7 @@ from lib.intake import (
     save_input,
     save_triage,
 )
-from lib.prd import (
+from totomisu.prd import (
     debate_done,
     design_exists,
     prd_exists,
@@ -32,21 +42,21 @@ from lib.prd import (
     run_designer,
     run_pm,
 )
-from lib.architect import get_affected_repos, run_architect, tech_spec_exists
-from lib.workspace import (
+from totomisu.architect import get_affected_repos, run_architect, tech_spec_exists
+from totomisu.workspace import (
     create_worktrees,
     ensure_repos_cloned,
     setup_engineer_context,
     update_worktrees,
     worktrees_exist,
 )
-from lib.costs import check_cost_ceiling, save_costs
-from lib.engineer import (
+from totomisu.costs import check_cost_ceiling, save_costs
+from totomisu.engineer import (
     run_build_pipelines,
     run_cross_repo_review,
     run_cross_review_fixes,
 )
-from lib.status import init_status, update_phase
+from totomisu.status import init_status, update_phase
 
 
 # ── Phase ordering for --skip-to ──────────────────────────────────────
@@ -69,38 +79,60 @@ SKIP_TO_PHASES = (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="orchestrate",
+        prog="totomisu",
         description="Multi-repo orchestrator for the any-llm ecosystem.",
     )
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--issue", metavar="URL", help="GitHub issue URL to work on")
-    group.add_argument(
+    subparsers = parser.add_subparsers(dest="command")
+
+    # ── init ──────────────────────────────────────────────────────
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Initialise a new totomisu workspace.",
+    )
+    init_parser.add_argument(
+        "directory",
+        nargs="?",
+        default=None,
+        help=(
+            "Directory to use as the workspace.  If omitted, you will be "
+            "prompted interactively."
+        ),
+    )
+
+    # ── run ───────────────────────────────────────────────────────
+    run_parser = subparsers.add_parser(
+        "run",
+        help="Run the orchestration pipeline.",
+    )
+    run_group = run_parser.add_mutually_exclusive_group(required=True)
+    run_group.add_argument("--issue", metavar="URL", help="GitHub issue URL to work on")
+    run_group.add_argument(
         "--prompt", metavar="TEXT", help="Free-form prompt describing the work"
     )
-    group.add_argument(
+    run_group.add_argument(
         "--resume", metavar="SLUG", help="Resume a previous run from its slug"
     )
-    parser.add_argument(
+    run_parser.add_argument(
         "--skip-to",
         metavar="PHASE",
         choices=SKIP_TO_PHASES,
         help=f"Skip to a specific phase (requires --resume). Choices: {', '.join(SKIP_TO_PHASES)}",
     )
-    parser.add_argument(
+    run_parser.add_argument(
         "--ci-check",
         nargs="?",
         const="all",
         metavar="REPO",
         help="Check CI status for all repos (or a specific repo). Requires --resume.",
     )
-    parser.add_argument(
+    run_parser.add_argument(
         "--fix-pr",
         nargs="?",
         const="all",
         metavar="REPO",
         help="Fetch PR review comments and send engineer to fix for all repos (or a specific repo). Requires --resume.",
     )
-    parser.add_argument(
+    run_parser.add_argument(
         "--fix-cross-review",
         nargs="?",
         const="all",
@@ -110,7 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
             "repo). Requires --resume."
         ),
     )
-    parser.add_argument(
+    run_parser.add_argument(
         "--headless",
         action="store_true",
         default=False,
@@ -120,6 +152,28 @@ def build_parser() -> argparse.ArgumentParser:
             "Architect still runs interactively unless combined with --skip-to."
         ),
     )
+
+    # ── dashboard ─────────────────────────────────────────────────
+    dash_parser = subparsers.add_parser(
+        "dashboard",
+        help="Launch the web dashboard.",
+    )
+    dash_parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Port to listen on (default: 8080).",
+    )
+
+    # ── _repo-runner (hidden, used by tmux panes) ─────────────────
+    rr_parser = subparsers.add_parser("_repo-runner")
+    rr_parser.add_argument("slug")
+    rr_parser.add_argument("repo")
+    rr_parser.add_argument("--fix-cross-review", action="store_true", dest="rr_fix_xr")
+    rr_parser.add_argument("--fix-pr", action="store_true", dest="rr_fix_pr")
+    rr_parser.add_argument("--ci-check", action="store_true", dest="rr_ci_check")
+    rr_parser.add_argument("--rebase", action="store_true", dest="rr_rebase")
+
     return parser
 
 
@@ -144,11 +198,116 @@ def _confirm_continue(phase_name: str, slug: str) -> None:
         next_phase_idx = SKIP_TO_PHASES.index(phase_name.lower().replace(" ", "-")) + 1
         if next_phase_idx < len(SKIP_TO_PHASES):
             next_phase = SKIP_TO_PHASES[next_phase_idx]
-            print(
-                f"  Resume with: uv run orchestrate.py "
-                f"--resume {slug} --skip-to {next_phase}"
-            )
+            print(f"  Resume with: totomisu run --resume {slug} --skip-to {next_phase}")
         sys.exit(0)
+
+
+# ── Init command ──────────────────────────────────────────────────────
+
+
+def _check_system_deps() -> list[str]:
+    """Check that required system tools are available."""
+    missing = []
+    for tool in ("opencode", "gh", "git", "tmux"):
+        if shutil.which(tool) is None:
+            missing.append(tool)
+    return missing
+
+
+def cmd_init(args: argparse.Namespace) -> None:
+    """Initialise a totomisu workspace.
+
+    Creates the directory structure, copies bundled agent definitions and
+    opencode config, clones all ecosystem repos, and writes a global
+    config so that ``totomisu run`` works from anywhere.
+    """
+    print("\n── totomisu init ───────────────────────────────────\n")
+
+    # Check system deps.
+    missing = _check_system_deps()
+    if missing:
+        print(
+            f"  [WARN] Missing required tools: {', '.join(missing)}\n"
+            f"  Install them before running `totomisu run`.\n"
+        )
+
+    # Determine workspace directory.
+    if args.directory:
+        ws_dir = Path(args.directory).expanduser().resolve()
+    else:
+        default = Path.cwd() / "totomisu-workspace"
+        raw = input(f"  Workspace directory [{default}]: ").strip()
+        ws_dir = Path(raw).expanduser().resolve() if raw else default
+
+    print(f"  Workspace: {ws_dir}\n")
+
+    # Create workspace structure.
+    ws_dir.mkdir(parents=True, exist_ok=True)
+    (ws_dir / "repos").mkdir(exist_ok=True)
+    (ws_dir / "specs").mkdir(exist_ok=True)
+
+    # Copy bundled agent definitions.
+    pkg_data = get_package_data_path()
+    agents_src = pkg_data / "agents"
+    agents_dst = ws_dir / ".opencode" / "agents"
+    agents_dst.mkdir(parents=True, exist_ok=True)
+    for md_file in sorted(agents_src.glob("*.md")):
+        shutil.copy2(md_file, agents_dst / md_file.name)
+        print(f"  Copied agent: {md_file.name}")
+
+    # Write opencode.json.
+    opencode_cfg = ws_dir / "opencode.json"
+    if not opencode_cfg.exists():
+        opencode_cfg.write_text(
+            json.dumps({"$schema": "https://opencode.ai/config.json"}, indent=2) + "\n"
+        )
+        print("  Created opencode.json")
+
+    # Write workspace marker.
+    marker = ws_dir / WORKSPACE_MARKER
+    marker_data = {"version": 1, "workspace": str(ws_dir)}
+    marker.write_text(json.dumps(marker_data, indent=2) + "\n")
+    print(f"  Created {WORKSPACE_MARKER} marker")
+
+    # Write global config so totomisu can find the workspace from anywhere.
+    global_cfg_dir = Path.home() / ".config" / "totomisu"
+    global_cfg_dir.mkdir(parents=True, exist_ok=True)
+    global_cfg = global_cfg_dir / "config.json"
+    global_cfg.write_text(json.dumps({"workspace": str(ws_dir)}, indent=2) + "\n")
+    print(f"  Saved global config: {global_cfg}")
+
+    # Clone repos.
+    print("\n  Cloning repositories...\n")
+    from totomisu.config import ProjectPaths
+    from totomisu.workspace import ensure_repos_cloned
+
+    paths = ProjectPaths(root=ws_dir)
+    ensure_repos_cloned(paths)
+
+    # Verify branches.
+    print("\n  Verifying default branches...\n")
+    for repo in REPOS:
+        repo_dir = paths.repo_path(repo.name)
+        if repo_dir.exists():
+            result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                cwd=str(repo_dir),
+            )
+            branch = result.stdout.strip() if result.returncode == 0 else "???"
+            expected = repo.default_branch
+            status = "ok" if branch == expected else f"MISMATCH (expected {expected})"
+            print(f"  {repo.name:20s} -> {branch} [{status}]")
+
+    print(f"\n{'=' * 56}")
+    print(f"  Workspace ready: {ws_dir}")
+    print()
+    print(f"  Run from anywhere:")
+    print(f"    totomisu run --issue <url>")
+    print(f'    totomisu run --prompt "description"')
+    print(f"    totomisu dashboard")
+    print(f"{'=' * 56}\n")
 
 
 # ── Phase runners ─────────────────────────────────────────────────────
@@ -241,7 +400,7 @@ def phase_specs(
 
     # ── PM + Debate ───────────────────────────────────────────────
     if has_pm and headless:
-        from lib.prd import run_pm_headless
+        from totomisu.prd import run_pm_headless
 
         if _should_skip("pm", skip_to):
             pass
@@ -359,7 +518,7 @@ def phase_cross_review_fix(slug: str, repo_names: list[str]) -> None:
         update_phase(slug, "cross-review-fix", "skipped", paths)
 
 
-# ── Main pipeline ─────────────────────────────────────────────────────
+# ── Run command ───────────────────────────────────────────────────────
 
 _PATH_HEADER = {
     "simple-bug": "Simple Bug",
@@ -370,7 +529,7 @@ _PATH_HEADER = {
 
 def _run_ci_check(args: argparse.Namespace) -> None:
     """Standalone CI check for one or all repos."""
-    from lib.repo_runner import step_ci_watch
+    from totomisu.repo_runner import step_ci_watch
 
     paths = get_project_paths()
     triage = load_triage(args.resume, paths)
@@ -399,7 +558,7 @@ def _run_ci_check(args: argparse.Namespace) -> None:
 
 def _run_fix_pr(args: argparse.Namespace) -> None:
     """Fetch PR comments and send engineer to fix (parallel via tmux)."""
-    from lib.engineer import run_fix_pr_pipelines
+    from totomisu.engineer import run_fix_pr_pipelines
 
     paths = get_project_paths()
     triage = load_triage(args.resume, paths)
@@ -421,7 +580,7 @@ def _run_fix_pr(args: argparse.Namespace) -> None:
     run_fix_pr_pipelines(slug, repos, paths, attach=True)
 
     print(f"\n  Done. To re-check CI:")
-    print(f"  uv run orchestrate.py --resume {slug} --ci-check\n")
+    print(f"  totomisu run --resume {slug} --ci-check\n")
     save_costs(slug, paths)
 
 
@@ -445,11 +604,12 @@ def _run_fix_cross_review(args: argparse.Namespace) -> None:
     phase_cross_review_fix(slug, repos)
 
     print("\n  Done. To re-check CI:")
-    print(f"  uv run orchestrate.py --resume {slug} --ci-check\n")
+    print(f"  totomisu run --resume {slug} --ci-check\n")
     save_costs(slug, paths)
 
 
-def run_pipeline(args: argparse.Namespace) -> None:
+def cmd_run(args: argparse.Namespace) -> None:
+    """Run the orchestration pipeline."""
     # Handle standalone actions first.
     if args.ci_check is not None:
         if not args.resume:
@@ -512,7 +672,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     paths = get_project_paths()
     if not check_cost_ceiling(slug, paths):
         print("  Pipeline paused by cost guardrail.")
-        print(f"  Resume with: uv run orchestrate.py --resume {slug} --skip-to build")
+        print(f"  Resume with: totomisu run --resume {slug} --skip-to build")
         save_costs(slug, paths)
         return
 
@@ -530,9 +690,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     # Cost guardrail: check after build before cross-review.
     if not check_cost_ceiling(slug, paths):
         print("  Pipeline paused by cost guardrail.")
-        print(
-            f"  Resume with: uv run orchestrate.py --resume {slug} --skip-to cross-review"
-        )
+        print(f"  Resume with: totomisu run --resume {slug} --skip-to cross-review")
         save_costs(slug, paths)
         return
 
@@ -548,7 +706,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     paths = get_project_paths()
     cost_file = save_costs(slug, paths)
     if cost_file:
-        from lib.costs import get_feature_costs
+        from totomisu.costs import get_feature_costs
 
         costs = get_feature_costs(slug, paths)
         cost_str = f"${costs['total_cost']:.2f}" if costs else "N/A"
@@ -561,14 +719,73 @@ def run_pipeline(args: argparse.Namespace) -> None:
     print(f"  Specs:      specs/{slug}/")
     print(f"  Worktrees:  specs/{slug}/repos/")
     print(f"  Logs:       specs/{slug}/logs/")
-    print(f"  Dashboard:  uv run dashboard.py")
+    print(f"  Dashboard:  totomisu dashboard")
     print(f"{'=' * 56}\n")
+
+
+# ── Dashboard command ─────────────────────────────────────────────────
+
+
+def cmd_dashboard(args: argparse.Namespace) -> None:
+    """Launch the web dashboard."""
+    from totomisu.dashboard_server import run_dashboard
+
+    run_dashboard(port=args.port)
+
+
+# ── Hidden _repo-runner command ───────────────────────────────────────
+
+
+def cmd_repo_runner(args: argparse.Namespace) -> None:
+    """Internal: dispatches repo_runner operations from tmux panes."""
+    from totomisu.repo_runner import (
+        run_cross_review_fix_pipeline,
+        run_fix_pr_pipeline,
+        run_repo_pipeline,
+        step_ci_watch,
+        step_rebase_on_base,
+    )
+    from totomisu.config import MAX_REVIEW_ROUNDS
+
+    slug = args.slug
+    repo = args.repo
+
+    if args.rr_fix_xr:
+        run_cross_review_fix_pipeline(slug, repo)
+    elif args.rr_fix_pr:
+        run_fix_pr_pipeline(slug, repo)
+    elif args.rr_ci_check:
+        paths = get_project_paths()
+        step_ci_watch(slug, repo, paths)
+    elif args.rr_rebase:
+        paths = get_project_paths()
+        step_rebase_on_base(slug, repo, paths)
+    else:
+        run_repo_pipeline(slug, repo, max_review_rounds=MAX_REVIEW_ROUNDS)
+
+
+# ── Entry point ───────────────────────────────────────────────────────
 
 
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    run_pipeline(args)
+
+    if args.command is None:
+        parser.print_help()
+        sys.exit(0)
+
+    if args.command == "init":
+        cmd_init(args)
+    elif args.command == "run":
+        cmd_run(args)
+    elif args.command == "dashboard":
+        cmd_dashboard(args)
+    elif args.command == "_repo-runner":
+        cmd_repo_runner(args)
+    else:
+        parser.print_help()
+        sys.exit(1)
 
 
 if __name__ == "__main__":

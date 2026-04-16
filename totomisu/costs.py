@@ -7,7 +7,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-from lib.config import REPO_BY_NAME, ProjectPaths
+from totomisu.config import REPO_BY_NAME, ProjectPaths
 
 
 # ── DB location ───────────────────────────────────────────────────────
@@ -192,7 +192,7 @@ def get_feature_costs(slug: str, paths: ProjectPaths) -> dict | None:
 
             # Only look at sessions created after a reasonable start time.
             # Use the feature's status.json created_at if available, else 0.
-            from lib.status import load_status
+            from totomisu.status import load_status
 
             status_data = load_status(slug, paths)
             created_at = 0

@@ -1,11 +1,11 @@
-"""Web dashboard for monitoring any-llm-world orchestrator progress.
+"""Web dashboard for monitoring totomisu orchestrator progress.
 
 Usage:
-    uv run dashboard.py              # start on port 8080
-    uv run dashboard.py --port 9090  # custom port
+    totomisu dashboard               # start on port 8080
+    totomisu dashboard --port 9090   # custom port
 
-Frontend assets live in the ``dashboard/`` directory and are served as
-static files.  No build step is required.
+Frontend assets are bundled with the package and served as static files.
+No build step is required.
 """
 
 from __future__ import annotations
@@ -23,9 +23,9 @@ from pathlib import Path
 from socketserver import ThreadingMixIn
 from urllib.parse import unquote
 
-from lib.config import get_project_paths
-from lib.costs import get_feature_costs
-from lib.status import (
+from totomisu.config import get_package_data_path, get_project_paths
+from totomisu.costs import get_feature_costs
+from totomisu.status import (
     ALL_PHASES,
     PHASE_LABELS,
     PHASES_BY_TYPE,
@@ -40,8 +40,7 @@ from lib.status import (
 
 # ── Path constants ────────────────────────────────────────────────────
 
-_PROJECT_ROOT = Path(__file__).resolve().parent
-_DASHBOARD_DIR = _PROJECT_ROOT / "dashboard"
+_DASHBOARD_DIR = get_package_data_path() / "dashboard"
 
 # ANSI escape code pattern for stripping terminal colors from log lines.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -552,7 +551,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return None
 
     def _handle_fix_prs(self) -> None:
-        from lib.engineer import run_fix_pr_pipelines
+        from totomisu.engineer import run_fix_pr_pipelines
 
         payload = self._read_json_body()
         if payload is None:
@@ -622,8 +621,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         session_name = f"ci-check-{slug}-{repo}"
         cmd = (
-            f"uv run python lib/repo_runner.py "
-            f"{shlex.quote(slug)} {shlex.quote(repo)} --ci-check"
+            f"totomisu _repo-runner {shlex.quote(slug)} {shlex.quote(repo)} --ci-check"
         )
 
         # Kill any existing session first.
@@ -669,10 +667,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         session_name = f"rebase-{slug}-{repo}"
-        cmd = (
-            f"uv run python lib/repo_runner.py "
-            f"{shlex.quote(slug)} {shlex.quote(repo)} --rebase"
-        )
+        cmd = f"totomisu _repo-runner {shlex.quote(slug)} {shlex.quote(repo)} --rebase"
 
         # Kill any existing session first.
         subprocess.run(
@@ -718,8 +713,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         session_name = f"resume-{slug}"
         cmd = (
-            f"uv run orchestrate.py --resume {shlex.quote(slug)} "
-            f"--skip-to {shlex.quote(phase)}"
+            f"totomisu run --resume {shlex.quote(slug)} --skip-to {shlex.quote(phase)}"
         )
 
         subprocess.run(
@@ -802,22 +796,29 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        prog="dashboard",
-        description="Web dashboard for the any-llm-world orchestrator.",
-    )
-    parser.add_argument("--port", type=int, default=8080, help="Port to listen on")
-    args = parser.parse_args()
+def run_dashboard(*, port: int = 8080) -> None:
+    """Start the dashboard HTTP server.
 
-    server = ThreadingHTTPServer(("0.0.0.0", args.port), DashboardHandler)
-    print(f"Dashboard running at http://localhost:{args.port}")
+    Called by ``totomisu dashboard`` (see cli.py).
+    """
+    server = ThreadingHTTPServer(("0.0.0.0", port), DashboardHandler)
+    print(f"Dashboard running at http://localhost:{port}")
     print("Press Ctrl-C to stop.\n")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down.")
         server.server_close()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="totomisu dashboard",
+        description="Web dashboard for the totomisu orchestrator.",
+    )
+    parser.add_argument("--port", type=int, default=8080, help="Port to listen on")
+    args = parser.parse_args()
+    run_dashboard(port=args.port)
 
 
 if __name__ == "__main__":

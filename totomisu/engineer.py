@@ -8,8 +8,13 @@ import sys
 import time
 from pathlib import Path
 
-from lib.config import BUILD_PHASE_TIMEOUT, CAVEMAN_PROMPT, REPO_BY_NAME, ProjectPaths
-from lib.parse import parse_cross_review_repos
+from totomisu.config import (
+    BUILD_PHASE_TIMEOUT,
+    CAVEMAN_PROMPT,
+    REPO_BY_NAME,
+    ProjectPaths,
+)
+from totomisu.parse import parse_cross_review_repos
 
 
 # ── Tmux helpers ──────────────────────────────────────────────────────
@@ -169,11 +174,7 @@ def run_build_pipelines(
 
     pane_commands: list[tuple[str, str]] = []
     for name in repo_names:
-        wt_path = str(paths.worktree_path(slug, name))
-        # Run repo_runner.py from the project root so imports work.
-        cmd = (
-            f"uv run python lib/repo_runner.py {shlex.quote(slug)} {shlex.quote(name)}"
-        )
+        cmd = f"totomisu _repo-runner {shlex.quote(slug)} {shlex.quote(name)}"
         pane_commands.append((cmd, str(paths.root)))
 
     _tmux_launch_panes(session_name, pane_commands)
@@ -433,7 +434,7 @@ def run_cross_review_fixes(
     pane_commands: list[tuple[str, str]] = []
     for name in affected:
         cmd = (
-            f"uv run python lib/repo_runner.py"
+            f"totomisu _repo-runner"
             f" {shlex.quote(slug)} {shlex.quote(name)} --fix-cross-review"
         )
         pane_commands.append((cmd, str(paths.root)))
@@ -493,10 +494,7 @@ def run_fix_pr_pipelines(
         if not wt_path.exists():
             print(f"  [{name}] No worktree found, skipping.")
             continue
-        cmd = (
-            f"uv run python lib/repo_runner.py"
-            f" {shlex.quote(slug)} {shlex.quote(name)} --fix-pr"
-        )
+        cmd = f"totomisu _repo-runner {shlex.quote(slug)} {shlex.quote(name)} --fix-pr"
         pane_commands.append((cmd, str(paths.root)))
 
     if not pane_commands:
