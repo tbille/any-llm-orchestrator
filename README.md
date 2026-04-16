@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="icon.png" alt="totomisu" width="200">
+</p>
+
 # totomisu
 
 Multi-repo orchestrator for the [any-llm ecosystem](https://github.com/mozilla-ai). Coordinates feature work, bug fixes, and cross-repo changes across all six repositories from a single entry point.
