@@ -1,4 +1,4 @@
-# any-llm-world
+# totomisu
 
 Multi-repo orchestrator for the [any-llm ecosystem](https://github.com/mozilla-ai). Coordinates feature work, bug fixes, and cross-repo changes across all six repositories from a single entry point.
 
@@ -13,44 +13,84 @@ Multi-repo orchestrator for the [any-llm ecosystem](https://github.com/mozilla-a
 | [any-llm-ts](https://github.com/mozilla-ai/any-llm-ts) | TypeScript | TypeScript SDK -- talks to the gateway |
 | [any-llm-platform](https://github.com/mozilla-ai/any-llm-platform) | Python | Platform -- budgets, users, observability |
 
-## Prerequisites
+## Installation
 
-- [uv](https://docs.astral.sh/uv/)
-- [opencode](https://opencode.ai) with a configured provider
-- [gh](https://cli.github.com/) (GitHub CLI, authenticated)
-- [tmux](https://github.com/tmux/tmux)
-- git
-- [wt](https://worktrunk.dev/) (optional -- falls back to `git worktree add` if not installed)
+Requires Python 3.12+. macOS/Linux only.
 
-## Usage
+```sh
+# With uv (recommended)
+uv pip install .
+
+# Or with pip
+pip install .
+
+# Or as a global tool (no venv activation needed)
+uv tool install .
+```
+
+This installs the `totomisu` command on your PATH.
+
+### System dependencies
+
+The following tools must be installed and available on PATH:
+
+| Tool | Required | Purpose |
+|------|----------|---------|
+| [opencode](https://opencode.ai) | Yes | AI coding agent CLI |
+| [gh](https://cli.github.com/) | Yes | GitHub CLI (must be authenticated) |
+| git | Yes | Version control |
+| [tmux](https://github.com/tmux/tmux) | Yes | Terminal multiplexer for parallel pipelines |
+| [uv](https://docs.astral.sh/uv/) | Optional | Used by individual repo test commands |
+| [wt](https://worktrunk.dev/) | Optional | Git worktree helper (falls back to `git worktree add`) |
+
+## Getting started
+
+### 1. Initialise a workspace
+
+```sh
+totomisu init
+```
+
+This will:
+- Ask you where the workspace should be created (or pass a directory: `totomisu init ~/my-workspace`)
+- Create the `repos/` and `specs/` directories
+- Clone all six ecosystem repos
+- Copy the bundled agent definitions into the workspace
+- Write a global config so `totomisu` works from anywhere
+
+### 2. Run the orchestrator
 
 ```sh
 # From a GitHub issue
-uv run orchestrate.py --issue https://github.com/mozilla-ai/any-llm/issues/123
+totomisu run --issue https://github.com/mozilla-ai/any-llm/issues/123
 
 # From a free-form prompt
-uv run orchestrate.py --prompt "Add batch API support to all SDKs"
+totomisu run --prompt "Add batch API support to all SDKs"
 
 # Headless mode (PM and debate run non-interactively)
-uv run orchestrate.py --prompt "Add batch API support to all SDKs" --headless
+totomisu run --prompt "Add batch API support to all SDKs" --headless
+```
 
+### 3. Resume, check, and fix
+
+```sh
 # Resume a previous run
-uv run orchestrate.py --resume add-batch-api
+totomisu run --resume add-batch-api
 
 # Skip to a specific phase
-uv run orchestrate.py --resume add-batch-api --skip-to build
+totomisu run --resume add-batch-api --skip-to build
 
 # Check CI status for all repos (or a specific one)
-uv run orchestrate.py --resume add-batch-api --ci-check
-uv run orchestrate.py --resume add-batch-api --ci-check any-llm
+totomisu run --resume add-batch-api --ci-check
+totomisu run --resume add-batch-api --ci-check any-llm
 
 # Fix PR review comments
-uv run orchestrate.py --resume add-batch-api --fix-pr
-uv run orchestrate.py --resume add-batch-api --fix-pr gateway
+totomisu run --resume add-batch-api --fix-pr
+totomisu run --resume add-batch-api --fix-pr gateway
 
 # Fix cross-review findings
-uv run orchestrate.py --resume add-batch-api --fix-cross-review
-uv run orchestrate.py --resume add-batch-api --fix-cross-review any-llm-ts
+totomisu run --resume add-batch-api --fix-cross-review
+totomisu run --resume add-batch-api --fix-cross-review any-llm-ts
 ```
 
 ### CLI flags
@@ -132,50 +172,63 @@ Each per-repo build pipeline includes several notable behaviors:
 ## Project structure
 
 ```
-any-llm-world/
-├── orchestrate.py              # CLI entry point
-├── dashboard.py                # Web dashboard server
-├── dashboard/                  # Dashboard frontend
-│   ├── index.html              # Main dashboard page
-│   ├── docs.html               # Document viewer page
-│   ├── css/                    # Stylesheets
-│   └── js/                     # JavaScript modules
-├── lib/
-│   ├── config.py               # Repo registry, paths, env-var tunables
-│   ├── intake.py               # Issue fetching, triage classifier
-│   ├── parse.py                # Structured output parsing (JSON, verdicts, findings)
-│   ├── prd.py                  # PM, debate, designer phases
-│   ├── architect.py            # Tech spec generation
-│   ├── workspace.py            # Repo cloning, worktree creation
-│   ├── engineer.py             # Tmux launcher, cross-repo review, fix pipelines
-│   ├── repo_runner.py          # Per-repo pipeline: engineer -> test -> review -> PR -> CI
-│   ├── pr.py                   # PR creation (deterministic + AI fallback), CI helpers
-│   ├── costs.py                # Cost/token aggregation from opencode's SQLite DB
-│   └── status.py               # Concurrent-safe status tracking (fcntl.flock)
-├── .opencode/agents/           # Agent definitions
-│   ├── product-manager.md
-│   ├── reviewer.md
-│   ├── designer.md
-│   ├── architect.md
-│   ├── code-reviewer.md
-│   └── pr-creator.md
-├── repos/                      # Cloned repositories (gitignored)
-└── specs/                      # Feature specs and worktrees (gitignored)
+totomisu/                           # Python package (pip install .)
+├── cli.py                          # CLI entry point (init, run, dashboard, _repo-runner)
+├── config.py                       # Repo registry, paths, env-var tunables
+├── intake.py                       # Issue fetching, triage classifier
+├── parse.py                        # Structured output parsing (JSON, verdicts, findings)
+├── prd.py                          # PM, debate, designer phases
+├── architect.py                    # Tech spec generation
+├── workspace.py                    # Repo cloning, worktree creation
+├── engineer.py                     # Tmux launcher, cross-repo review, fix pipelines
+├── repo_runner.py                  # Per-repo pipeline: engineer -> test -> review -> PR -> CI
+├── pr.py                           # PR creation (deterministic + AI fallback), CI helpers
+├── costs.py                        # Cost/token aggregation from opencode's SQLite DB
+├── status.py                       # Concurrent-safe status tracking (fcntl.flock)
+├── dashboard_server.py             # Web dashboard HTTP server
+└── data/
+    ├── agents/                     # Bundled agent definitions
+    │   ├── product-manager.md
+    │   ├── reviewer.md
+    │   ├── designer.md
+    │   ├── architect.md
+    │   ├── code-reviewer.md
+    │   └── pr-creator.md
+    └── dashboard/                  # Bundled frontend assets
+        ├── index.html
+        ├── docs.html
+        ├── css/
+        └── js/
+```
+
+After `totomisu init`, the workspace contains:
+
+```
+<workspace>/
+├── .totomisu                       # Workspace marker (JSON)
+├── opencode.json                   # opencode config
+├── .opencode/agents/               # Agent definitions (copied from package)
+├── repos/                          # Cloned upstream repos
+│   ├── any-llm/
+│   ├── gateway/
+│   ├── any-llm-rust/
+│   ├── any-llm-go/
+│   ├── any-llm-ts/
+│   └── any-llm-platform/
+└── specs/                          # Per-feature workspaces (created during runs)
     └── <slug>/
-        ├── input.md            # Raw issue or prompt
-        ├── triage.json         # Triage classification + selected phases
-        ├── prd.md              # Product requirements
-        ├── design.md           # Design proposals (if applicable)
-        ├── tech-spec.md        # Overall technical spec
-        ├── <repo>-spec.md      # Per-repo implementation specs
-        ├── <repo>-review.md    # Per-repo code reviews
-        ├── cross-review.md     # Cross-repo consistency review
-        ├── <repo>-ci-failures.md  # CI failure logs (when fixes needed)
-        ├── <repo>-addressed-comments.json  # Tracks which PR comments have been fixed
-        ├── status.json         # Phase progress (read by dashboard)
-        ├── costs.json          # Cost/token breakdown
-        ├── repos/              # Git worktrees (gitignored)
-        └── logs/               # Agent output logs (gitignored)
+        ├── input.md
+        ├── triage.json
+        ├── prd.md
+        ├── design.md
+        ├── tech-spec.md
+        ├── <repo>-spec.md
+        ├── <repo>-review.md
+        ├── cross-review.md
+        ├── status.json
+        ├── costs.json
+        ├── repos/                  # Git worktrees
+        └── logs/                   # Agent output logs
 ```
 
 ## Dashboard
@@ -183,8 +236,8 @@ any-llm-world/
 Monitor and control all active features from a browser:
 
 ```sh
-uv run dashboard.py              # http://localhost:8080
-uv run dashboard.py --port 9090  # custom port
+totomisu dashboard               # http://localhost:8080
+totomisu dashboard --port 9090   # custom port
 ```
 
 The dashboard auto-refreshes and shows:
@@ -216,22 +269,30 @@ Each feature is fully isolated by slug -- separate spec directories, worktrees, 
 
 ```sh
 # Terminal 1: complete interactive phases for Feature A
-uv run orchestrate.py --issue https://github.com/mozilla-ai/any-llm/issues/123
+totomisu run --issue https://github.com/mozilla-ai/any-llm/issues/123
 
 # Terminal 2: start Feature B once A's interactive phases are done
-uv run orchestrate.py --prompt "Add rate limiting to the gateway"
+totomisu run --prompt "Add rate limiting to the gateway"
 
 # Terminal 3: dashboard watches both
-uv run dashboard.py
+totomisu dashboard
 ```
 
 To re-run only the build phase (e.g. after editing a spec manually):
 
 ```sh
-uv run orchestrate.py --resume add-batch-api --skip-to build
+totomisu run --resume add-batch-api --skip-to build
 ```
 
 File locking on `repos/` ensures parallel orchestrators don't corrupt shared git state during clone or worktree creation.
+
+## Workspace resolution
+
+`totomisu run` and `totomisu dashboard` find the workspace automatically:
+
+1. `$TOTOMISU_WORKSPACE` environment variable (if set)
+2. Walk up from the current directory looking for a `.totomisu` marker file
+3. Read from `~/.config/totomisu/config.json` (written by `totomisu init`)
 
 ## Resumability
 
@@ -247,6 +308,7 @@ A configurable cost guardrail pauses the pipeline before expensive phases if the
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
+| `TOTOMISU_WORKSPACE` | (none) | Override workspace path |
 | `ORCHESTRATOR_MAX_REVIEW_ROUNDS` | 2 | Engineer -> review -> fix cycles before creating a PR |
 | `ORCHESTRATOR_MAX_CI_FIX_ROUNDS` | 2 | CI failure -> fix -> re-push cycles |
 | `ORCHESTRATOR_CI_POLL_INTERVAL` | 30 | Seconds between CI status polls |
