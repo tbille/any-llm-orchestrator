@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
 
 from lib.config import CLASSIFIER_TIMEOUT, ProjectPaths
 from lib.intake import _extract_reply
+from lib.parse import parse_classifier_json
 
 
 # ── Phase 2: Product Manager (interactive TUI) ───────────────────────
@@ -64,6 +64,86 @@ def run_pm(slug: str, paths: ProjectPaths) -> Path:
     return prd_file
 
 
+# ── Phase 2+3 combined: Headless PM + self-critique ───────────────────
+
+
+def run_pm_headless(slug: str, paths: ProjectPaths) -> Path:
+    """Run PM and debate as a single headless agent call.
+
+    The agent writes the PRD, critiques it, and revises it in one pass.
+    No user interaction required.  Produces the same ``prd.md`` output
+    as the interactive flow.
+    """
+    spec_dir = paths.spec_dir(slug)
+    prd_file = paths.spec_file(slug, "prd.md")
+    input_file = paths.spec_file(slug, "input.md")
+
+    print("\n── Phase 2+3: Headless PM + Debate ─────────────────")
+    print(f"  Working dir: {spec_dir}")
+    print(f"  Input:       input.md")
+    print(f"  Output:      prd.md")
+    print("  Running headless (no TUI interaction)...")
+    print("────────────────────────────────────────────────────\n")
+
+    prompt = (
+        f"You are acting as both the Product Manager and Reviewer.\n\n"
+        f"Read the input document and create a comprehensive PRD.\n"
+        f"Then critically review your own PRD for:\n"
+        f"- Missing edge cases\n"
+        f"- Cross-repo consistency gaps\n"
+        f"- Backwards compatibility issues\n"
+        f"- Scope creep\n"
+        f"- Missing acceptance criteria\n\n"
+        f"Revise the PRD to address any issues found.\n"
+        f"Write the final PRD to: {prd_file}\n\n"
+        f"Use the standard PRD template:\n"
+        f"# PRD: <Title>\n"
+        f"## Problem Statement\n"
+        f"## User Stories\n"
+        f"## Scope (repos affected, out of scope)\n"
+        f"## Requirements (functional, non-functional)\n"
+        f"## Success Criteria\n"
+        f"## Open Questions\n"
+        f"## Cross-repo Impact Analysis"
+    )
+
+    file_args: list[str] = []
+    if input_file.exists():
+        file_args = ["-f", str(input_file)]
+
+    result = subprocess.run(
+        [
+            "opencode",
+            "run",
+            "--dir",
+            str(spec_dir),
+            "--dangerously-skip-permissions",
+            *file_args,
+            "--",
+            prompt,
+        ],
+        cwd=str(spec_dir),
+    )
+
+    if result.returncode != 0:
+        print(
+            f"  [WARN] Headless PM agent exited with code {result.returncode}",
+            file=sys.stderr,
+        )
+
+    if not prd_file.exists():
+        print(f"  [WARN] PRD not found at {prd_file}.", file=sys.stderr)
+        print("         The headless PM may not have written it.")
+
+    # Write debate-done marker since critique was included.
+    from datetime import datetime, timezone
+
+    marker = paths.spec_file(slug, "debate-done")
+    marker.write_text(datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8")
+
+    return prd_file
+
+
 # ── Phase 3: PRD Debate (interactive TUI) ─────────────────────────────
 
 
@@ -71,6 +151,8 @@ def run_debate(slug: str, paths: ProjectPaths) -> Path:
     """Launch the reviewer agent to critique and refine the PRD.
 
     The user can participate in the debate. The PRD is refined in place.
+    Writes a ``debate-done`` marker file on completion so that
+    ``--resume`` does not re-launch the debate TUI.
     """
     spec_dir = paths.spec_dir(slug)
     prd_file = paths.spec_file(slug, "prd.md")
@@ -104,6 +186,12 @@ def run_debate(slug: str, paths: ProjectPaths) -> Path:
         ],
         cwd=str(spec_dir),
     )
+
+    # Write marker file so --resume skips the debate.
+    from datetime import datetime, timezone
+
+    marker = paths.spec_file(slug, "debate-done")
+    marker.write_text(datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8")
 
     return prd_file
 
@@ -177,18 +265,13 @@ def classify_design_need(slug: str, paths: ProjectPaths) -> bool:
     # Use the same JSON event stream parser as the triage classifier.
     reply = _extract_reply(result.stdout)
 
-    # Extract the JSON object from the reply text.
-    try:
-        brace_start = reply.find("{")
-        brace_end = reply.rfind("}")
-        if brace_start != -1 and brace_end != -1:
-            data = json.loads(reply[brace_start : brace_end + 1])
-            needs = data.get("needs_design", False)
-            reasoning = data.get("reasoning", "")
-            print(f"  Design needed: {needs} -- {reasoning}")
-            return bool(needs)
-    except (json.JSONDecodeError, KeyError):
-        pass
+    # Extract the JSON object from the reply text using robust parsing.
+    data = parse_classifier_json(reply, required_keys=["needs_design"])
+    if data is not None:
+        needs = data.get("needs_design", False)
+        reasoning = data.get("reasoning", "")
+        print(f"  Design needed: {needs} -- {reasoning}")
+        return bool(needs)
 
     # Default: assume design is needed (safer).
     print("  Could not parse design classifier output; assuming design needed.")
@@ -247,6 +330,11 @@ def run_designer(slug: str, paths: ProjectPaths) -> Path:
 
 def prd_exists(slug: str, paths: ProjectPaths) -> bool:
     return paths.spec_file(slug, "prd.md").exists()
+
+
+def debate_done(slug: str, paths: ProjectPaths) -> bool:
+    """Check if the debate phase has already completed."""
+    return paths.spec_file(slug, "debate-done").exists()
 
 
 def design_exists(slug: str, paths: ProjectPaths) -> bool:

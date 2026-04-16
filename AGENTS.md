@@ -14,6 +14,7 @@ Python 3.12 (pinned in `.python-version`). macOS/Linux only — uses `fcntl.floc
 ```sh
 uv run orchestrate.py --issue <github-issue-url>
 uv run orchestrate.py --prompt "description"
+uv run orchestrate.py --prompt "description" --headless  # no TUI interaction for PM/debate
 uv run orchestrate.py --resume <slug>
 uv run orchestrate.py --resume <slug> --skip-to engineer
 uv run orchestrate.py --resume <slug> --ci-check all
@@ -25,13 +26,14 @@ There are no build, test, lint, format, or typecheck commands for this repo itse
 
 ## Architecture
 
-- `orchestrate.py` — CLI entry point. Phases run sequentially: intake → PM → debate → design → architect → workspace setup → engineer (tmux) → code review → cross-review → PR creation.
+- `orchestrate.py` — CLI entry point. Phases run sequentially: intake → PM → debate → design → architect → workspace setup → engineer (tmux) → code review → cross-review → PR creation. Supports `--headless` for non-interactive PM/debate.
 - `dashboard.py` — Standalone HTTP server with inline HTML/JS. No build step.
-- `lib/config.py` — Repo registry, env-var tunables, path helpers. Source of truth for repo metadata.
+- `lib/config.py` — Repo registry, env-var tunables, path helpers. Source of truth for repo metadata. Each `RepoInfo` now includes `test_command` for pre-review build checks.
 - `lib/intake.py` — Fetches issues via `gh`, classifies via opencode headless mode. Parses opencode's `--format json` output as newline-delimited JSON events.
+- `lib/parse.py` — Structured output parsing for agent responses. Extracts JSON blocks, review verdicts, and cross-review repo lists. Replaces ad-hoc string matching.
 - `lib/workspace.py` — Clones repos to `repos/`, creates worktrees under `specs/<slug>/repos/`. Injects `AGENTS.md` into each worktree before the build phase.
-- `lib/engineer.py` — Launches per-repo pipelines as tmux panes. Each pane runs `uv run python lib/repo_runner.py <slug> <repo>`.
-- `lib/repo_runner.py` — Both a module and a standalone script (has `sys.path` manipulation). Runs in tmux panes.
+- `lib/engineer.py` — Launches per-repo pipelines as tmux panes. Each pane runs `uv run python lib/repo_runner.py <slug> <repo>`. Build phase has a configurable timeout.
+- `lib/repo_runner.py` — Both a module and a standalone script (has `sys.path` manipulation). Runs in tmux panes. Includes pre-review build check and simple bug investigation steps.
 - `lib/status.py` — Concurrent-safe status tracking via `fcntl.flock()` and atomic write-then-rename to `status.json`.
 - `lib/pr.py` — Tries deterministic PR creation first (shell commands only). Falls back to AI agent only when a PR template needs filling.
 - `lib/costs.py` — Reads opencode's SQLite DB directly for cost/token aggregation.
@@ -61,6 +63,7 @@ There are no build, test, lint, format, or typecheck commands for this repo itse
 | `ORCHESTRATOR_CI_POLL_INTERVAL` | 30 | Seconds between CI polls |
 | `ORCHESTRATOR_CLASSIFIER_TIMEOUT` | 120 | Headless classifier timeout (seconds) |
 | `ORCHESTRATOR_COST_CEILING` | 200.0 | USD cost ceiling before pipeline pauses |
+| `ORCHESTRATOR_BUILD_PHASE_TIMEOUT` | 5400 | Build phase tmux wait timeout (seconds, default 90 min) |
 
 ## Code conventions
 

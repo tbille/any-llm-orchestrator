@@ -26,6 +26,7 @@ from lib.intake import (
 )
 from lib.prd import (
     classify_design_need,
+    debate_done,
     design_exists,
     prd_exists,
     run_debate,
@@ -109,6 +110,16 @@ def build_parser() -> argparse.ArgumentParser:
             "repo). Requires --resume."
         ),
     )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        default=False,
+        help=(
+            "Run PM and debate phases headlessly (no TUI interaction). "
+            "The PRD is generated and critiqued in a single pass. "
+            "Architect still runs interactively unless combined with --skip-to."
+        ),
+    )
     return parser
 
 
@@ -119,6 +130,25 @@ def _should_skip(phase: str, skip_to: str | None) -> bool:
         return SKIP_TO_PHASES.index(phase) < SKIP_TO_PHASES.index(skip_to)
     except ValueError:
         return False
+
+
+def _confirm_continue(phase_name: str, slug: str) -> None:
+    """Prompt the user to confirm continuation after an interactive phase.
+
+    Catches accidental early exits from TUI sessions.  Typing 'n' pauses
+    the pipeline and prints a resume command.
+    """
+    answer = input(f"\n  {phase_name} phase complete. Continue? [Y/n] ").strip().lower()
+    if answer in ("n", "no"):
+        print(f"  Pipeline paused after {phase_name}.")
+        next_phase_idx = SKIP_TO_PHASES.index(phase_name.lower().replace(" ", "-")) + 1
+        if next_phase_idx < len(SKIP_TO_PHASES):
+            next_phase = SKIP_TO_PHASES[next_phase_idx]
+            print(
+                f"  Resume with: uv run orchestrate.py "
+                f"--resume {slug} --skip-to {next_phase}"
+            )
+        sys.exit(0)
 
 
 # ── Phase runners ─────────────────────────────────────────────────────
@@ -183,30 +213,58 @@ def phase_workspace(slug: str, repo_names: list[str]) -> dict[str, Path]:
     return worktrees
 
 
-def phase_feature(slug: str, repo_names: list[str], skip_to: str | None) -> list[str]:
+def phase_feature(
+    slug: str,
+    repo_names: list[str],
+    skip_to: str | None,
+    *,
+    headless: bool = False,
+) -> list[str]:
     """PM -> debate -> designer? -> architect."""
     paths = get_project_paths()
 
-    # PM
-    if _should_skip("pm", skip_to):
-        pass  # Don't overwrite status -- phase may have completed in a prior run.
-    elif not prd_exists(slug, paths):
-        update_phase(slug, "pm", "running", paths)
-        run_pm(slug, paths)
-        update_phase(slug, "pm", "done", paths)
-    else:
-        print(f"  [skip] PRD already exists: specs/{slug}/prd.md")
-        update_phase(slug, "pm", "done", paths)
+    # PM + Debate: headless mode combines both into a single pass.
+    if headless:
+        from lib.prd import run_pm_headless
 
-    # Debate
-    if _should_skip("debate", skip_to):
-        pass
-    elif prd_exists(slug, paths):
-        update_phase(slug, "debate", "running", paths)
-        run_debate(slug, paths)
-        update_phase(slug, "debate", "done", paths)
+        if _should_skip("pm", skip_to):
+            pass
+        elif not prd_exists(slug, paths):
+            update_phase(slug, "pm", "running", paths)
+            run_pm_headless(slug, paths)
+            update_phase(slug, "pm", "done", paths)
+            # Headless mode auto-critiques, so debate is implicit.
+            update_phase(slug, "debate", "done", paths)
+        else:
+            print(f"  [skip] PRD already exists: specs/{slug}/prd.md")
+            update_phase(slug, "pm", "done", paths)
+            update_phase(slug, "debate", "done", paths)
     else:
-        update_phase(slug, "debate", "skipped", paths)
+        # PM (interactive)
+        if _should_skip("pm", skip_to):
+            pass
+        elif not prd_exists(slug, paths):
+            update_phase(slug, "pm", "running", paths)
+            run_pm(slug, paths)
+            update_phase(slug, "pm", "done", paths)
+            _confirm_continue("PM", slug)
+        else:
+            print(f"  [skip] PRD already exists: specs/{slug}/prd.md")
+            update_phase(slug, "pm", "done", paths)
+
+        # Debate (interactive)
+        if _should_skip("debate", skip_to):
+            pass
+        elif debate_done(slug, paths):
+            print(f"  [skip] Debate already completed for: specs/{slug}/")
+            update_phase(slug, "debate", "done", paths)
+        elif prd_exists(slug, paths):
+            update_phase(slug, "debate", "running", paths)
+            run_debate(slug, paths)
+            update_phase(slug, "debate", "done", paths)
+            _confirm_continue("Debate", slug)
+        else:
+            update_phase(slug, "debate", "skipped", paths)
 
     # Designer (conditional)
     if _should_skip("designer", skip_to):
@@ -217,6 +275,7 @@ def phase_feature(slug: str, repo_names: list[str], skip_to: str | None) -> list
             update_phase(slug, "designer", "running", paths)
             run_designer(slug, paths)
             update_phase(slug, "designer", "done", paths)
+            _confirm_continue("Designer", slug)
         else:
             print("  Design phase skipped (technical-only change).")
             update_phase(slug, "designer", "skipped", paths)
@@ -231,6 +290,7 @@ def phase_feature(slug: str, repo_names: list[str], skip_to: str | None) -> list
         update_phase(slug, "architect", "running", paths)
         result = run_architect(slug, repo_names, paths)
         update_phase(slug, "architect", "done", paths)
+        _confirm_continue("Architect", slug)
         return result
     print(f"  [skip] Tech spec already exists: specs/{slug}/tech-spec.md")
     update_phase(slug, "architect", "done", paths)
@@ -438,8 +498,9 @@ def run_pipeline(args: argparse.Namespace) -> None:
         phase_workspace(slug, repo_names)
 
     # Spec phases: depends on triage type.
+    headless = getattr(args, "headless", False)
     if triage.triage_type == "feature":
-        repo_names = phase_feature(slug, repo_names, skip_to)
+        repo_names = phase_feature(slug, repo_names, skip_to, headless=headless)
     elif triage.triage_type == "complex-bug":
         repo_names = phase_complex_bug(slug, repo_names, skip_to)
 

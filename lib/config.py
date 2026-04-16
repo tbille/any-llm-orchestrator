@@ -18,6 +18,15 @@ class RepoInfo:
     default_branch: str = "main"
     scope_notes: str = ""
     test_hints: str = ""
+    test_command: str = ""
+    """Shell command to run the **full** test suite.  Used as fallback by
+    the build-check step and still the canonical CI command."""
+    targeted_test_command: str = ""
+    """Shell template for running only tests affected by the current
+    changes.  Must contain ``{targets}`` which will be replaced with
+    the language-specific list of test files / packages / modules
+    identified from ``git diff``.  When empty, the build-check step
+    falls back to *test_command*."""
 
     @property
     def github_slug(self) -> str:
@@ -44,13 +53,15 @@ REPOS: tuple[RepoInfo, ...] = (
             "repo. Only the gateway provider/client code lives here."
         ),
         test_hints=(
-            "Run ONLY the tests related to your changes first: "
-            "uv run pytest tests/unit/<relevant_file> -x -q. "
-            "The full test suite is slow. Run it once at the end: "
-            "uv run pytest tests/unit -x -q --timeout=60. "
+            "Run ONLY the tests related to your changes: "
+            "uv run pytest tests/unit/<relevant_test_file> -x -q. "
+            "Do NOT run the full test suite during development -- it is slow "
+            "and the full suite runs automatically in CI. "
             "Do NOT run integration tests. "
             "For linting use: uv run ruff check . && uv run mypy."
         ),
+        test_command="uv run pytest tests/unit -x -q --timeout=60",
+        targeted_test_command="uv run pytest {targets} -x -q --timeout=60",
     ),
     RepoInfo(
         name="gateway",
@@ -61,10 +72,14 @@ REPOS: tuple[RepoInfo, ...] = (
             "to various LLM providers. Captures observability data."
         ),
         test_hints=(
-            "Run targeted tests first: uv run pytest tests/<relevant_file> -x -q. "
-            "Full suite: uv run pytest -x -q --timeout=60. "
+            "Run ONLY the tests related to your changes: "
+            "uv run pytest tests/<relevant_test_file> -x -q. "
+            "Do NOT run the full test suite during development -- it is slow "
+            "and the full suite runs automatically in CI. "
             "For linting: uv run ruff check . && uv run mypy."
         ),
+        test_command="uv run pytest -x -q --timeout=60",
+        targeted_test_command="uv run pytest {targets} -x -q --timeout=60",
     ),
     RepoInfo(
         name="any-llm-rust",
@@ -72,16 +87,29 @@ REPOS: tuple[RepoInfo, ...] = (
         language="rust",
         description="Rust SDK for communicating with the any-llm gateway.",
         test_hints=(
-            "Run: cargo test --all-features. "
+            "Run ONLY the tests related to your changes: "
+            "cargo test <test_name_or_module> --all-features. "
+            "Do NOT run the full test suite during development -- it is slow "
+            "and the full suite runs automatically in CI. "
             "Lint: cargo clippy --all-features -- -D warnings && cargo fmt --check."
         ),
+        test_command="cargo test --all-features",
+        targeted_test_command="cargo test {targets} --all-features",
     ),
     RepoInfo(
         name="any-llm-go",
         github_url="https://github.com/mozilla-ai/any-llm-go",
         language="go",
         description="Go SDK for communicating with the any-llm gateway.",
-        test_hints=("Run: go test ./... -race -count=1. Lint: golangci-lint run."),
+        test_hints=(
+            "Run ONLY the tests in packages you changed: "
+            "go test ./path/to/package -race -count=1. "
+            "Do NOT run the full test suite during development -- it is slow "
+            "and the full suite runs automatically in CI. "
+            "Lint: golangci-lint run."
+        ),
+        test_command="go test ./... -race -count=1",
+        targeted_test_command="go test {targets} -race -count=1",
     ),
     RepoInfo(
         name="any-llm-ts",
@@ -89,9 +117,14 @@ REPOS: tuple[RepoInfo, ...] = (
         language="typescript",
         description="TypeScript SDK for communicating with the any-llm gateway.",
         test_hints=(
-            "Run: npm test (or the test script in package.json). "
+            "Run ONLY the tests related to your changes. Check package.json "
+            "for the test runner (jest/vitest) and pass the relevant test "
+            "file paths. Do NOT run the full test suite during development -- "
+            "it is slow and the full suite runs automatically in CI. "
             "Lint: npx biome check . or the lint script in package.json."
         ),
+        test_command="npm test",
+        targeted_test_command="npx vitest run {targets}",
     ),
     RepoInfo(
         name="any-llm-platform",
@@ -103,10 +136,14 @@ REPOS: tuple[RepoInfo, ...] = (
         ),
         default_branch="develop",
         test_hints=(
-            "Run targeted tests first: uv run pytest tests/<relevant_file> -x -q. "
-            "Full suite: uv run pytest -x -q --timeout=60. "
+            "Run ONLY the tests related to your changes: "
+            "uv run pytest tests/<relevant_test_file> -x -q. "
+            "Do NOT run the full test suite during development -- it is slow "
+            "and the full suite runs automatically in CI. "
             "For linting: uv run ruff check . && uv run mypy."
         ),
+        test_command="uv run pytest -x -q --timeout=60",
+        targeted_test_command="uv run pytest {targets} -x -q --timeout=60",
     ),
 )
 
@@ -172,6 +209,9 @@ CI_POLL_INTERVAL: int = _env_int("ORCHESTRATOR_CI_POLL_INTERVAL", 30)
 
 CLASSIFIER_TIMEOUT: int = _env_int("ORCHESTRATOR_CLASSIFIER_TIMEOUT", 120)
 """Seconds before a headless classifier call is considered timed out."""
+
+BUILD_PHASE_TIMEOUT: int = _env_int("ORCHESTRATOR_BUILD_PHASE_TIMEOUT", 5400)
+"""Seconds before the build phase tmux wait times out (default 90 min)."""
 
 
 # ── Caveman prompt (token-saving mode for headless agents) ────────────

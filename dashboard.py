@@ -3,16 +3,25 @@
 Usage:
     uv run dashboard.py              # start on port 8080
     uv run dashboard.py --port 9090  # custom port
+
+Frontend assets live in the ``dashboard/`` directory and are served as
+static files.  No build step is required.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import mimetypes
+import os
+import re
+import subprocess
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
 from socketserver import ThreadingMixIn
+from urllib.parse import unquote
 
 from lib.config import get_project_paths
 from lib.costs import get_feature_costs
@@ -20,6 +29,7 @@ from lib.status import (
     ALL_PHASES,
     PHASE_LABELS,
     PHASES_BY_TYPE,
+    cancel_feature,
     get_live_tmux_sessions,
     get_log_tails,
     get_pr_info_for_feature,
@@ -28,44 +38,56 @@ from lib.status import (
 )
 
 
-# ── API ───────────────────────────────────────────────────────────────
+# ── Path constants ────────────────────────────────────────────────────
 
+_PROJECT_ROOT = Path(__file__).resolve().parent
+_DASHBOARD_DIR = _PROJECT_ROOT / "dashboard"
+
+# ANSI escape code pattern for stripping terminal colors from log lines.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+# ── Selective caching ─────────────────────────────────────────────────
+#
+# Split into two tiers:
+#   - Fast (5s):  status.json, tmux sessions, log tails -- cheap
+#   - Slow (30s): PR/CI info, costs -- requires gh CLI calls
+#
+# The /api/status response merges both, but expensive data is
+# refreshed less frequently.
 
 _cache_lock = threading.Lock()
-_cache: dict = {}
-_cache_ts: float = 0.0
-_CACHE_TTL = 30.0  # seconds – avoids hammering gh on every 5s poll
+_fast_cache: dict = {}
+_fast_cache_ts: float = 0.0
+_FAST_TTL = 5.0
+
+_slow_cache: dict = {}
+_slow_cache_ts: float = 0.0
+_SLOW_TTL = 30.0
 
 
-def _build_api_response() -> dict:
-    """Collect all data the dashboard needs in a single JSON payload.
-
-    Results are cached for :data:`_CACHE_TTL` seconds so that the expensive
-    ``gh`` queries aren't repeated on every poll cycle.
-    """
-    global _cache, _cache_ts
-
-    with _cache_lock:
-        if _cache and (time.monotonic() - _cache_ts) < _CACHE_TTL:
-            return _cache
-
+def _build_fast_data() -> tuple[list[dict], dict[str, list[str]]]:
+    """Collect cheap data: statuses, tmux sessions, log tails."""
     paths = get_project_paths()
     features = load_all_statuses(paths)
     tmux = get_live_tmux_sessions()
 
-    # Enrich each feature with live data.
     for feat in features:
         slug = feat.get("slug", "")
         feat["tmux_sessions"] = tmux.get(slug, [])
-
-        # Log tails for active agents.
         feat["log_tails"] = get_log_tails(slug, feat.get("repos", []), paths)
 
-        # Query PR/CI info during build phase (repos create PRs
-        # independently) and any phase after it.
+    return features, tmux
+
+
+def _build_slow_data(features: list[dict]) -> None:
+    """Enrich features with expensive data: PR/CI info, costs."""
+    paths = get_project_paths()
+    for feat in features:
+        slug = feat.get("slug", "")
         current = feat.get("current_phase", "")
         if (
-            current in ("build", "cross-review")
+            current in ("build", "cross-review", "cross-review-fix")
             or feat.get("phases", {}).get("build", {}).get("status") == "done"
         ):
             feat["pr_info"] = get_pr_info_for_feature(
@@ -73,590 +95,496 @@ def _build_api_response() -> dict:
             )
         else:
             feat["pr_info"] = {}
-
-        # Cost data from the opencode DB.
         feat["costs"] = get_feature_costs(slug, paths) or {}
 
-    result = {
-        "features": features,
-        "phase_labels": PHASE_LABELS,
-        "phases_by_type": {k: list(v) for k, v in PHASES_BY_TYPE.items()},
-        "all_phases": list(ALL_PHASES),
-    }
+
+def _build_api_response() -> dict:
+    """Collect all data the dashboard needs in a single JSON payload."""
+    global _fast_cache, _fast_cache_ts, _slow_cache, _slow_cache_ts
+
+    now = time.monotonic()
 
     with _cache_lock:
-        _cache = result
-        _cache_ts = time.monotonic()
+        fast_expired = not _fast_cache or (now - _fast_cache_ts) >= _FAST_TTL
+        slow_expired = not _slow_cache or (now - _slow_cache_ts) >= _SLOW_TTL
 
-    return result
+    if fast_expired:
+        features, tmux = _build_fast_data()
 
+        if slow_expired:
+            _build_slow_data(features)
+            with _cache_lock:
+                _slow_cache = {
+                    f.get("slug", ""): {
+                        "pr_info": f.get("pr_info", {}),
+                        "costs": f.get("costs", {}),
+                    }
+                    for f in features
+                }
+                _slow_cache_ts = now
+        else:
+            # Merge cached slow data into fresh fast data.
+            with _cache_lock:
+                for feat in features:
+                    slug = feat.get("slug", "")
+                    cached = _slow_cache.get(slug, {})
+                    feat.setdefault("pr_info", cached.get("pr_info", {}))
+                    feat.setdefault("costs", cached.get("costs", {}))
 
-# ── HTML ──────────────────────────────────────────────────────────────
-
-DASHBOARD_HTML = """\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>any-llm-world dashboard</title>
-<style>
-  :root {
-    --bg: #0d1117; --surface: #161b22; --border: #30363d;
-    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
-    --green: #3fb950; --red: #f85149; --yellow: #d29922;
-    --blue: #58a6ff; --purple: #bc8cff;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-         background: var(--bg); color: var(--text); padding: 24px; }
-  h1 { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
-  .header { display: flex; justify-content: space-between; align-items: center;
-            margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
-  .header .meta { color: var(--muted); font-size: 13px; }
-  .empty { color: var(--muted); text-align: center; padding: 64px 0; font-size: 15px; }
-
-  /* Feature card */
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-          padding: 20px; margin-bottom: 16px; }
-  .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-  .card-title { font-size: 16px; font-weight: 600; }
-  .card-type { font-size: 12px; padding: 2px 8px; border-radius: 12px; font-weight: 500; }
-  .type-feature { background: rgba(88,166,255,0.15); color: var(--blue); }
-  .type-simple-bug { background: rgba(63,185,80,0.15); color: var(--green); }
-  .type-complex-bug { background: rgba(210,153,34,0.15); color: var(--yellow); }
-
-  /* Phase bar */
-  .phases { display: flex; gap: 4px; margin-bottom: 16px; }
-  .phase { flex: 1; text-align: center; padding: 8px 4px; border-radius: 6px;
-           font-size: 11px; font-weight: 500; border: 1px solid transparent; }
-  .phase-done { background: rgba(63,185,80,0.15); color: var(--green); border-color: rgba(63,185,80,0.3); }
-  .phase-running { background: rgba(88,166,255,0.15); color: var(--blue); border-color: rgba(88,166,255,0.3);
-                   animation: pulse 2s ease-in-out infinite; }
-  .phase-pending { background: rgba(139,148,158,0.08); color: var(--muted); }
-  .phase-failed { background: rgba(248,81,73,0.15); color: var(--red); border-color: rgba(248,81,73,0.3); }
-  .phase-skipped { background: transparent; color: var(--muted); opacity: 0.4; text-decoration: line-through; }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
-
-  /* Repo table */
-  .repos { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .repos th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 12px;
-              border-bottom: 1px solid var(--border); }
-  .repos td { padding: 6px 12px; border-bottom: 1px solid var(--border); }
-  .repos tr:last-child td { border-bottom: none; }
-  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
-  .dot-done, .dot-pass { background: var(--green); }
-  .dot-running, .dot-pending { background: var(--blue); }
-  .dot-fail { background: var(--red); }
-  .dot-none, .dot-skipped { background: var(--muted); opacity: 0.4; }
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-
-  /* Log tail */
-  .log-tail { margin-top: 4px; padding: 6px 10px; background: var(--bg); border-radius: 4px;
-              font-family: 'SF Mono', Menlo, Monaco, 'Courier New', monospace; font-size: 11px;
-              color: var(--muted); line-height: 1.5; white-space: pre-wrap; word-break: break-all;
-              max-height: 80px; overflow: hidden; }
-  .logs-hidden .log-tail { display: none; }
-  .log-size { font-size: 11px; color: var(--muted); font-family: monospace; }
-  .log-active { color: var(--green); }
-  .log-idle { color: var(--yellow); }
-  .log-phase { font-size: 10px; padding: 1px 5px; border-radius: 3px;
-               background: rgba(139,148,158,0.12); color: var(--muted); margin-left: 6px; }
-  .log-toggle { font-size: 12px; padding: 3px 10px; border-radius: 4px; cursor: pointer;
-                background: rgba(139,148,158,0.1); color: var(--muted); border: 1px solid var(--border);
-                margin-left: 8px; }
-
-  /* Cost display */
-  .cost-bar { display: flex; gap: 16px; flex-wrap: wrap; align-items: center;
-              margin-top: 12px; padding: 10px 14px; background: var(--bg);
-              border-radius: 6px; font-size: 13px; }
-  .cost-total { font-weight: 600; color: var(--text); font-size: 15px; }
-  .cost-detail { color: var(--muted); font-size: 12px; }
-  .cost-repo { font-size: 11px; color: var(--muted); font-family: monospace; }
-  .log-toggle:hover { background: rgba(139,148,158,0.2); color: var(--text); }
-
-  /* Per-repo build steps */
-  .repo-steps { display: flex; gap: 3px; align-items: center; }
-  .step { display: inline-block; padding: 2px 6px; border-radius: 3px;
-          font-size: 10px; font-weight: 500; border: 1px solid transparent;
-          font-family: monospace; }
-  .step-done { background: rgba(63,185,80,0.15); color: var(--green); border-color: rgba(63,185,80,0.25); }
-  .step-running { background: rgba(88,166,255,0.15); color: var(--blue); border-color: rgba(88,166,255,0.25);
-                  animation: pulse 2s ease-in-out infinite; }
-  .step-pending { background: rgba(139,148,158,0.06); color: var(--muted); opacity: 0.5; }
-  .step-fail { background: rgba(248,81,73,0.15); color: var(--red); border-color: rgba(248,81,73,0.25); }
-  .repo-elapsed { font-size: 11px; color: var(--muted); margin-left: 6px; font-family: monospace; }
-  .build-count { font-size: 10px; opacity: 0.8; }
-
-  /* Step history */
-  .step-history { padding: 4px 10px; font-size: 11px; color: var(--muted);
-                  font-family: 'SF Mono', Menlo, Monaco, monospace; line-height: 1.6; }
-  .step-history .h-step { display: inline-block; padding: 1px 5px; border-radius: 3px;
-                          background: rgba(139,148,158,0.08); margin: 1px 0; }
-  .step-history .h-arrow { color: var(--muted); opacity: 0.4; margin: 0 2px; }
-  .step-history .h-dur { color: var(--muted); font-size: 10px; }
-  .step-history .h-fail { color: var(--red); }
-  .step-history .h-pass { color: var(--green); }
-  .hist-toggle { font-size: 10px; color: var(--muted); cursor: pointer; margin-left: 6px;
-                 opacity: 0.6; }
-  .hist-toggle:hover { opacity: 1; color: var(--accent); }
-
-  .notif-banner { font-size: 12px; padding: 6px 12px; border-radius: 6px; cursor: pointer;
-                  background: rgba(210,153,34,0.15); color: var(--yellow); border: 1px solid rgba(210,153,34,0.3); }
-  .notif-banner:hover { background: rgba(210,153,34,0.25); }
-  .notif-ok { background: rgba(63,185,80,0.1); color: var(--green); border-color: rgba(63,185,80,0.2); cursor: default; }
-
-   /* Tmux badges */
-   .tmux-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
-   .tmux-badge { font-size: 11px; padding: 2px 8px; border-radius: 4px;
-                 background: rgba(188,140,255,0.15); color: var(--purple);
-                 font-family: monospace; }
-
-   /* Action buttons */
-   .action-btn { font-size: 11px; padding: 3px 10px; border-radius: 4px; cursor: pointer;
-                 background: rgba(88,166,255,0.12); color: var(--accent); border: 1px solid rgba(88,166,255,0.3);
-                 font-weight: 500; margin-left: 8px; transition: background 0.15s; }
-   .action-btn:hover { background: rgba(88,166,255,0.25); }
-   .action-btn.btn-stop { background: rgba(248,81,73,0.12); color: var(--red);
-                           border-color: rgba(248,81,73,0.3); }
-   .action-btn.btn-stop:hover { background: rgba(248,81,73,0.25); }
-</style>
-</head>
-<body>
-
-<div class="header">
-  <h1>any-llm-world</h1>
-  <div class="meta">
-    <span id="notif-status"></span>
-    <button class="log-toggle" id="log-toggle-btn" onclick="toggleLogs()">Hide logs</button>
-    Auto-refresh: 5s &middot; <span id="updated"></span>
-  </div>
-</div>
-<div id="app"><div class="empty">Loading...</div></div>
-
-<script>
-const ICONS = { done: "\u2713", running: "\u21bb", pending: "\u00b7", failed: "\u2717", skipped: "\u2014" };
-
-// ── Browser notifications ────────────────────────────────
-
-const INTERACTIVE_PHASES = new Set(["pm", "debate", "designer", "architect"]);
-const PHASE_NOTIFY_LABELS = {
-  pm: "Product Manager is waiting for your input",
-  debate: "PRD Reviewer is waiting for discussion",
-  designer: "Designer is waiting for collaboration",
-  architect: "Architect is waiting for guidance",
-};
-const notified = new Set(); // tracks "slug:phase" combos already notified
-
-if ("Notification" in window && Notification.permission === "default") {
-  Notification.requestPermission();
-}
-
-function checkNotifications(features) {
-  if (!("Notification" in window) || Notification.permission !== "granted") return;
-
-  for (const f of features) {
-    const phase = f.current_phase;
-    if (!phase || !INTERACTIVE_PHASES.has(phase)) continue;
-    const ps = (f.phases && f.phases[phase]) || {};
-    if (ps.status !== "running") continue;
-
-    const key = f.slug + ":" + phase;
-    if (notified.has(key)) continue;
-    notified.add(key);
-
-    const label = PHASE_NOTIFY_LABELS[phase] || (phase + " is running");
-    new Notification("any-llm-world", {
-      body: f.slug + ": " + label,
-      icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔔</text></svg>",
-      tag: key, // prevents duplicate OS notifications for the same event
-    });
-  }
-}
-
-function updateNotifStatus() {
-  const el = document.getElementById("notif-status");
-  if (!("Notification" in window)) {
-    el.innerHTML = "";
-    return;
-  }
-  if (Notification.permission === "granted") {
-    el.innerHTML = '<span class="notif-banner notif-ok">Notifications on</span> ';
-  } else if (Notification.permission === "default") {
-    el.innerHTML = '<span class="notif-banner" onclick="Notification.requestPermission().then(updateNotifStatus)">Enable notifications</span> ';
-  } else {
-    el.innerHTML = '<span class="notif-banner" style="opacity:0.5;cursor:default">Notifications blocked</span> ';
-  }
-}
-updateNotifStatus();
-
-// ── Fix PRs action ───────────────────────────────────
-
-async function fixPRs(slug) {
-  const btn = document.getElementById("fix-pr-btn-" + slug);
-  if (btn) { btn.disabled = true; btn.textContent = "Starting..."; }
-  try {
-    const res = await fetch("/api/fix-prs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slug: slug }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      alert("Fix PRs failed: " + (data.error || "Unknown error"));
-      if (btn) { btn.disabled = false; btn.textContent = "Fix PRs"; }
-    }
-    // On success the button state will be updated by the next refresh cycle.
-  } catch (e) {
-    alert("Fix PRs request failed: " + e);
-    if (btn) { btn.disabled = false; btn.textContent = "Fix PRs"; }
-  }
-}
-
-async function stopFixPRs(slug) {
-  try {
-    const res = await fetch("/api/stop-fix-prs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slug: slug }),
-    });
-    if (!res.ok) {
-      const data = await res.json();
-      alert("Stop failed: " + (data.error || "Unknown error"));
-    }
-  } catch (e) {
-    alert("Stop request failed: " + e);
-  }
-}
-
-// ── Log toggle ───────────────────────────────────────
-let logsVisible = localStorage.getItem("logsVisible") !== "false";
-
-function toggleLogs() {
-  logsVisible = !logsVisible;
-  localStorage.setItem("logsVisible", logsVisible);
-  document.getElementById("app").classList.toggle("logs-hidden", !logsVisible);
-  updateLogToggle();
-}
-
-function updateLogToggle() {
-  const btn = document.getElementById("log-toggle-btn");
-  if (btn) btn.textContent = logsVisible ? "Hide logs" : "Show logs";
-}
-
-function render(data) {
-  const { features, phase_labels, phases_by_type, all_phases } = data;
-  const app = document.getElementById("app");
-
-  if (!features.length) {
-    app.innerHTML = '<div class="empty">No features in progress.<br>Start one with: uv run orchestrate.py --issue &lt;url&gt;</div>';
-    return;
-  }
-
-  app.innerHTML = features.map(f => {
-    const applicable = phases_by_type[f.triage_type] || all_phases;
-    const typeClass = "type-" + f.triage_type;
-
-    // Build step ordering for the mini pipeline indicators.
-    const BUILD_STEPS = ["engineer", "review", "pr", "ci-watch"];
-    const STEP_LABELS = { "engineer": "ENG", "review": "REV", "pr": "PR", "ci-watch": "CI" };
-
-    // Count completed repos for the build phase label.
-    const repoProgress = f.repo_progress || {};
-    const doneCount = Object.values(repoProgress).filter(p => p.step === "done").length;
-    const totalRepos = (f.repos || []).length;
-
-    // Phase bar (with build completion count).
-    const phaseBar = all_phases.map(p => {
-      if (!applicable.includes(p)) return "";
-      const ps = (f.phases && f.phases[p]) || {};
-      const st = ps.status || "pending";
-      let label = phase_labels[p] || p;
-      if (p === "build" && totalRepos > 0) {
-        label += ' <span class="build-count">' + doneCount + "/" + totalRepos + "</span>";
-      }
-      return '<div class="phase phase-' + st + '">' + ICONS[st] + " " + label + "</div>";
-    }).join("");
-
-    // Helper functions.
-    function fmtSize(b) {
-      if (b >= 1048576) return (b / 1048576).toFixed(1) + " MB";
-      if (b >= 1024) return (b / 1024).toFixed(1) + " KB";
-      return b + " B";
-    }
-    function escHtml(s) { return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
-    function fmtElapsed(isoStart) {
-      if (!isoStart) return "";
-      const secs = Math.floor((Date.now() - new Date(isoStart).getTime()) / 1000);
-      if (secs < 60) return secs + "s";
-      if (secs < 3600) return Math.floor(secs / 60) + "m";
-      return Math.floor(secs / 3600) + "h" + Math.floor((secs % 3600) / 60) + "m";
-    }
-
-    // Determine which build step index a repo is currently on.
-    function stepIndex(stepName) {
-      if (!stepName) return -1;
-      if (stepName === "done") return BUILD_STEPS.length;
-      // "fix-pr" is a post-build action; treat it like a running state after CI.
-      if (stepName.startsWith("fix-pr")) return BUILD_STEPS.length - 1;
-      // Match partial names: "review-1" -> "review", "engineer-fix-1" -> "engineer", "ci-fix" -> "ci-watch"
-      for (let i = 0; i < BUILD_STEPS.length; i++) {
-        if (stepName.startsWith(BUILD_STEPS[i]) || stepName.startsWith("ci-fix")) {
-          return stepName.startsWith("ci-fix") ? 3 : i;
+        result = {
+            "features": features,
+            "phase_labels": PHASE_LABELS,
+            "phases_by_type": {k: list(v) for k, v in PHASES_BY_TYPE.items()},
+            "all_phases": list(ALL_PHASES),
         }
-      }
-      return -1;
+
+        with _cache_lock:
+            _fast_cache = result
+            _fast_cache_ts = now
+
+        return result
+
+    with _cache_lock:
+        return _fast_cache
+
+
+def _invalidate_cache() -> None:
+    """Force both cache tiers to expire on next poll."""
+    global _fast_cache, _fast_cache_ts, _slow_cache, _slow_cache_ts
+    with _cache_lock:
+        _fast_cache = {}
+        _fast_cache_ts = 0.0
+        _slow_cache = {}
+        _slow_cache_ts = 0.0
+
+
+# ── Document API ──────────────────────────────────────────────────────
+
+
+def _build_docs_response(slug: str) -> dict | None:
+    """Collect all documents for a single feature, grouped by category."""
+    paths = get_project_paths()
+    spec_dir = paths.spec_dir(slug)
+    if not spec_dir.exists():
+        return None
+
+    status = load_status(slug, paths)
+    triage_type = status.get("triage_type", "unknown") if status else "unknown"
+    repos = status.get("repos", []) if status else []
+    current_phase = status.get("current_phase", "") if status else ""
+
+    group_labels = {
+        "requirements": "Requirements & Design",
+        "specs": "Technical Specifications",
+        "reviews": "Code Reviews",
+        "ci_and_pr": "CI & PR Feedback",
+        "other": "Other",
+    }
+    groups: dict[str, list[dict]] = {k: [] for k in group_labels}
+
+    known_labels: dict[str, tuple[str, str, int]] = {
+        "input.md": ("requirements", "Original input", 0),
+        "prd.md": ("requirements", "PRD", 1),
+        "design.md": ("requirements", "Design proposal", 2),
+        "triage.json": ("requirements", "Triage classification", 3),
+        "tech-spec.md": ("specs", "Overall tech spec", 0),
+        "cross-review.md": ("reviews", "Cross-repo review", 100),
     }
 
-    // Format a duration in seconds to human-readable.
-    function fmtDuration(startIso, endIso) {
-      if (!startIso || !endIso) return "";
-      const secs = Math.floor((new Date(endIso) - new Date(startIso)) / 1000);
-      if (secs < 60) return secs + "s";
-      if (secs < 3600) return Math.floor(secs / 60) + "m";
-      return Math.floor(secs / 3600) + "h" + Math.floor((secs % 3600) / 60) + "m";
+    def classify(name: str) -> tuple[str, str, int]:
+        if name in known_labels:
+            return known_labels[name]
+        if name.endswith("-spec.md"):
+            repo = name.replace("-spec.md", "")
+            return ("specs", f"{repo} spec", 10)
+        if name.endswith("-review.md"):
+            repo = name.replace("-review.md", "")
+            return ("reviews", f"{repo} code review", 10)
+        if name.endswith("-ci-failures.md"):
+            repo = name.replace("-ci-failures.md", "")
+            return ("ci_and_pr", f"{repo} CI failures", 10)
+        if name.endswith("-pr-feedback.md"):
+            repo = name.replace("-pr-feedback.md", "")
+            return ("ci_and_pr", f"{repo} PR feedback", 20)
+        if name.endswith("-investigation.md"):
+            repo = name.replace("-investigation.md", "")
+            return ("specs", f"{repo} investigation", 5)
+        if name.endswith("-build-failures.md"):
+            repo = name.replace("-build-failures.md", "")
+            return ("ci_and_pr", f"{repo} build failures", 5)
+        if name.endswith("-xreview-filtered.md"):
+            repo = name.replace("-xreview-filtered.md", "")
+            return ("reviews", f"{repo} cross-review (filtered)", 50)
+        if name.endswith("-addressed-comments.json"):
+            repo = name.replace("-addressed-comments.json", "")
+            return ("ci_and_pr", f"{repo} addressed comments", 30)
+        if name in ("status.json", "costs.json"):
+            return ("other", name, 0)
+        if name == "debate-done":
+            return ("other", "Debate marker", 10)
+        return ("other", name, 50)
+
+    for entry in sorted(spec_dir.iterdir()):
+        if entry.is_dir():
+            continue
+        name = entry.name
+        if not (
+            name.endswith(".md") or name.endswith(".json") or name == "debate-done"
+        ):
+            continue
+        group_key, label, sort_order = classify(name)
+        stat = entry.stat()
+        groups[group_key].append(
+            {
+                "name": name,
+                "label": label,
+                "sort_order": sort_order,
+                "size_bytes": stat.st_size,
+                "modified": stat.st_mtime,
+            }
+        )
+
+    for docs in groups.values():
+        docs.sort(key=lambda d: (d["sort_order"], d["name"]))
+
+    return {
+        "slug": slug,
+        "triage_type": triage_type,
+        "repos": repos,
+        "current_phase": current_phase,
+        "groups": groups,
+        "group_labels": group_labels,
     }
 
-    // Build history timeline HTML for a repo.
-    function renderHistory(history, repoId) {
-      if (!history || !history.length) return "";
-      const hasBackAndForth = history.some(h => h.step && h.step.includes("fix"));
-      const items = history.map(h => {
-        const dur = fmtDuration(h.started_at, h.finished_at);
-        const name = (h.step || "?").toUpperCase().replace(/-/g, " ").replace("ENGINEER", "ENG").replace("REVIEW", "REV");
-        // Mark review failures (followed by an engineer-fix step).
-        let marker = "";
-        return '<span class="h-step">' + name +
-          (dur ? ' <span class="h-dur">' + dur + '</span>' : '') +
-          marker + '</span>';
-      }).join('<span class="h-arrow">\u2192</span>');
 
-      const toggleId = "hist-" + repoId.replace(/[^a-zA-Z0-9]/g, "-");
-      const label = history.length + " step" + (history.length !== 1 ? "s" : "") +
-        (hasBackAndForth ? " (fix loop)" : "");
-      return '<span class="hist-toggle" onclick="' +
-        "var el=document.getElementById('" + toggleId + "');el.style.display=el.style.display==='none'?'':'none'" +
-        '">\u25b8 ' + label + '</span>' +
-        '<div id="' + toggleId + '" class="step-history" style="display:none">' + items + '</div>';
-    }
+def _read_doc_content(slug: str, filename: str) -> str | None:
+    """Read a single document file, with path traversal protection."""
+    paths = get_project_paths()
+    spec_dir = paths.spec_dir(slug)
+    target = (spec_dir / filename).resolve()
 
-    // Repo rows with mini step pipeline + history + PR link.
-    const prInfo = f.pr_info || {};
-    const logTails = f.log_tails || {};
-    let repoRows = "";
-    if (f.repos && f.repos.length) {
-      repoRows = f.repos.map(r => {
-        const pr = prInfo[r] || {};
-        const prLink = pr.url ? '<a href="' + pr.url + '" target="_blank">' + pr.url.split("/").pop() + '</a>' : "";
-        const ciSt = pr.ci || "none";
-        const log = logTails[r] || {};
-        const logLines = (log.last_lines || []).map(escHtml).join("\\n");
-        const logSize = log.size_bytes ? '<span class="log-size">' + fmtSize(log.size_bytes) + '</span>' : '';
-        const logHtml = logLines ? '<div class="log-tail">' + logLines + '</div>' : '';
+    if not str(target).startswith(str(spec_dir.resolve())):
+        return None
+    if not target.suffix in (".md", ".json") and target.name != "debate-done":
+        return None
+    if not target.exists():
+        return None
+    try:
+        return target.read_text(encoding="utf-8")
+    except OSError:
+        return None
 
-        const progress = repoProgress[r] || {};
-        const currentStep = progress.step || "";
-        const history = progress.history || [];
 
-        // Reconcile: if live CI says "pass" but status.json still shows
-        // ci-watch or ci-fix as the current step, treat the repo as done
-        // so the mini-pipeline doesn't contradict the CI column.
-        const liveCI = (prInfo[r] || {}).ci;
-        const effectiveStep = (liveCI === "pass" && currentStep.startsWith("ci")) ? "done" : currentStep;
-        const effectiveIdx = stepIndex(effectiveStep);
+# ── Log API (full tail + SSE streaming) ───────────────────────────────
 
-        // Build mini step indicators: [ENG] [REV] [PR] [CI]
-        const stepsHtml = BUILD_STEPS.map((s, i) => {
-          let cls = "step-pending";
-          let icon = "";
-          if (effectiveStep === "done" || i < effectiveIdx) {
-            cls = "step-done"; icon = "\u2713 ";
-          } else if (i === effectiveIdx) {
-            cls = "step-running"; icon = "\u21bb ";
-          }
-          return '<span class="step ' + cls + '">' + icon + STEP_LABELS[s] + "</span>";
-        }).join("");
 
-        // Elapsed time on current step (hidden when reconciled to done).
-        const elapsed = (effectiveStep && effectiveStep !== "done")
-          ? '<span class="repo-elapsed">' + fmtElapsed(progress.started_at) + '</span>'
-          : '';
+def _get_log_path(slug: str, repo_name: str) -> Path | None:
+    """Find the most recent log file for a repo."""
+    paths = get_project_paths()
+    logs_dir = paths.logs_dir(slug)
+    if not logs_dir.exists():
+        return None
 
-        // History toggle (shows back-and-forth loops).
-        const histHtml = renderHistory(history, f.slug + "-" + r);
+    # Check in priority order (most recent phase first).
+    for phase in ("ci-fix", "pr-fix", "pr", "review", "engineer", "investigate"):
+        log_file = logs_dir / f"{repo_name}-{phase}.log"
+        if log_file.exists() and log_file.stat().st_size > 0:
+            return log_file
+    return None
 
-        return "<tr>" +
-          "<td><strong>" + r + "</strong> " + logSize + "</td>" +
-          '<td><div class="repo-steps">' + stepsHtml + elapsed + histHtml + "</div></td>" +
-          "<td>" + prLink + "</td>" +
-          "<td>" + (pr.url ? '<span class="status-dot dot-' + ciSt + '"></span>' + ciSt : "") + "</td>" +
-          "</tr>" +
-          (logHtml ? "<tr><td colspan='4'>" + logHtml + "</td></tr>" : "");
-      }).join("");
-    }
 
-    // Tmux badges
-    const tmuxHtml = (f.tmux_sessions || []).map(s =>
-      '<span class="tmux-badge">' + s + "</span>"
-    ).join("");
+def _read_log_tail(log_path: Path, lines: int = 200) -> str:
+    """Read the last N lines of a log file, stripping ANSI codes."""
+    try:
+        size = log_path.stat().st_size
+        if size == 0:
+            return ""
+        read_size = min(size, lines * 500)  # rough estimate
+        with log_path.open("rb") as fh:
+            fh.seek(max(0, size - read_size))
+            chunk = fh.read(read_size).decode("utf-8", errors="replace")
+        all_lines = chunk.splitlines()
+        tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
+        return "\n".join(_ANSI_RE.sub("", line) for line in tail)
+    except OSError:
+        return ""
 
-    // Cost display
-    const costs = f.costs || {};
-    let costHtml = "";
-    if (costs.total_cost > 0) {
-      const repoCosts = Object.entries(costs.by_repo || {})
-        .sort((a, b) => b[1].cost - a[1].cost)
-        .map(([name, d]) => '<span class="cost-repo">' + name + ": $" + d.cost.toFixed(2) + "</span>")
-        .join(" &middot; ");
-      const outputTok = costs.total_output_tokens || 0;
-      const tokStr = outputTok >= 1000000 ? (outputTok / 1000000).toFixed(1) + "M" :
-                     outputTok >= 1000 ? (outputTok / 1000).toFixed(1) + "K" : outputTok;
-      costHtml = '<div class="cost-bar">' +
-        '<span class="cost-total">$' + costs.total_cost.toFixed(2) + '</span>' +
-        '<span class="cost-detail">' + tokStr + ' output tokens &middot; ' +
-          (costs.sessions || 0) + ' sessions &middot; ' +
-          (costs.messages || 0) + ' messages</span>' +
-        (repoCosts ? '<div style="width:100%">' + repoCosts + '</div>' : '') +
-        '</div>';
-    }
 
-    // Fix PRs button: show when build phase is running or done.
-    // Always the same state — reviewers can add comments at any time.
-    // Stop button appears alongside when a fix-pr tmux session is active.
-    const buildPhase = (f.phases && f.phases.build) || {};
-    const showFixBtn = buildPhase.status === "running" || buildPhase.status === "done";
-    const fixPrRunning = (f.tmux_sessions || []).some(s => s.startsWith("fix-pr-"));
-    let fixBtnHtml = "";
-    if (showFixBtn) {
-      const onclickFix = "fixPRs(&apos;" + f.slug + "&apos;)";
-      fixBtnHtml = '<button class="action-btn" onclick="' + onclickFix + '">Fix PRs</button>';
-      if (fixPrRunning) {
-        const onclickStop = "stopFixPRs(&apos;" + f.slug + "&apos;)";
-        fixBtnHtml += '<button class="action-btn btn-stop" onclick="' + onclickStop + '">Stop Fixing</button>';
-      }
-    }
+# ── Static file serving ───────────────────────────────────────────────
 
-    return '<div class="card">' +
-      '<div class="card-header">' +
-        '<span class="card-title">' + f.slug + '</span>' +
-        '<span class="card-type ' + typeClass + '">' + f.triage_type + '</span>' +
-        fixBtnHtml +
-      '</div>' +
-      '<div class="phases">' + phaseBar + '</div>' +
-      (repoRows ? '<table class="repos"><tr><th>Repo</th><th>Status</th><th>PR</th><th>CI</th></tr>' + repoRows + '</table>' : '') +
-      (tmuxHtml ? '<div class="tmux-badges">tmux: ' + tmuxHtml + '</div>' : '') +
-      costHtml +
-      '</div>';
-  }).join("");
+
+_MIME_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
 }
 
-async function refresh() {
-  try {
-    const res = await fetch("/api/status");
-    const data = await res.json();
-    render(data);
-    // Apply log visibility state after render replaces the DOM.
-    document.getElementById("app").classList.toggle("logs-hidden", !logsVisible);
-    updateLogToggle();
-    checkNotifications(data.features || []);
-    document.getElementById("updated").textContent = new Date().toLocaleTimeString();
-  } catch (e) {
-    console.error("Refresh failed:", e);
-  }
-}
 
-refresh();
-setInterval(refresh, 5000);
-</script>
-</body>
-</html>
-"""
+def _serve_static(path: str) -> tuple[bytes, str, int] | None:
+    """Resolve a /static/... path to a file in the dashboard/ directory.
+
+    Returns ``(content, content_type, status_code)`` or ``None`` if not found.
+    """
+    # Strip the /static/ prefix.
+    rel = path[len("/static/") :]
+    target = (_DASHBOARD_DIR / rel).resolve()
+
+    # Path traversal protection (trailing slash prevents prefix false match).
+    if not str(target).startswith(str(_DASHBOARD_DIR.resolve()) + os.sep):
+        return None
+    if not target.is_file():
+        return None
+
+    ext = target.suffix.lower()
+    content_type = _MIME_TYPES.get(ext, "application/octet-stream")
+    try:
+        content = target.read_bytes()
+        return content, content_type, 200
+    except OSError:
+        return None
 
 
-# ── HTTP server ───────────────────────────────────────────────────────
+# ── HTTP Handler ──────────────────────────────────────────────────────
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
+        # Static files.
+        if self.path.startswith("/static/"):
+            result = _serve_static(self.path)
+            if result:
+                content, content_type, status = result
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+            else:
+                self.send_error(404)
+            return
+
+        # API endpoints.
         if self.path == "/api/status":
             self._json_response(_build_api_response())
+        elif self.path.startswith("/api/docs/"):
+            self._handle_docs_api()
+        elif self.path.startswith("/api/logs/"):
+            self._handle_logs_api()
+        # HTML pages (serve from dashboard/ directory).
+        elif self.path.startswith("/docs/"):
+            self._serve_html("docs.html")
         elif self.path in ("/", "/index.html"):
-            self._html_response(DASHBOARD_HTML)
+            self._serve_html("index.html")
         else:
             self.send_error(404)
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         if self.path == "/api/fix-prs":
             self._handle_fix_prs()
         elif self.path == "/api/stop-fix-prs":
             self._handle_stop_fix_prs()
+        elif self.path == "/api/ci-check":
+            self._handle_ci_check()
+        elif self.path == "/api/resume":
+            self._handle_resume()
+        elif self.path == "/api/cancel":
+            self._handle_cancel()
         else:
             self.send_error(404)
 
-    def _handle_fix_prs(self) -> None:
-        """Trigger fix-pr for all repos of a feature via tmux."""
-        from lib.engineer import run_fix_pr_pipelines
+    # ── HTML serving ──────────────────────────────────────
 
-        import json as _json
+    def _serve_html(self, filename: str) -> None:
+        """Serve an HTML file from the dashboard/ directory."""
+        target = _DASHBOARD_DIR / filename
+        if not target.is_file():
+            self.send_error(404)
+            return
+        try:
+            body = target.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError:
+            self.send_error(500)
 
-        # Read request body.
+    # ── Docs API ──────────────────────────────────────────
+
+    def _handle_docs_api(self) -> None:
+        rest = unquote(self.path[len("/api/docs/") :])
+        parts = rest.split("/", 1)
+        slug = parts[0]
+        filename = parts[1] if len(parts) > 1 else None
+
+        if not slug:
+            self._json_status(400, {"error": "Missing slug"})
+            return
+
+        if filename:
+            content = _read_doc_content(slug, filename)
+            if content is None:
+                self._json_status(404, {"error": f"Document '{filename}' not found"})
+                return
+            body = content.encode("utf-8")
+            ct = (
+                "application/json"
+                if filename.endswith(".json")
+                else "text/plain; charset=utf-8"
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", ct)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            data = _build_docs_response(slug)
+            if data is None:
+                self._json_status(404, {"error": f"Feature '{slug}' not found"})
+                return
+            self._json_response(data)
+
+    # ── Logs API (REST + SSE) ─────────────────────────────
+
+    def _handle_logs_api(self) -> None:
+        """Handle /api/logs/<slug>/<repo>/stream (SSE) and /api/logs/<slug>/<repo> (REST)."""
+        rest = unquote(self.path[len("/api/logs/") :])
+        parts = rest.split("/")
+
+        if len(parts) < 2:
+            self._json_status(400, {"error": "Missing slug or repo"})
+            return
+
+        slug, repo = parts[0], parts[1]
+        is_stream = len(parts) >= 3 and parts[2] == "stream"
+
+        log_path = _get_log_path(slug, repo)
+        if log_path is None:
+            if is_stream:
+                self._json_status(404, {"error": "No log file found"})
+            else:
+                self._json_status(404, {"error": "No log file found"})
+            return
+
+        if is_stream:
+            self._handle_log_stream(log_path)
+        else:
+            lines = 200
+            content = _read_log_tail(log_path, lines)
+            body = content.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    def _handle_log_stream(self, log_path: Path) -> None:
+        """SSE endpoint that tails a log file in real-time."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        try:
+            # Send initial content.
+            initial = _read_log_tail(log_path, 200)
+            self.wfile.write(f"event: initial\ndata: {initial}\n\n".encode())
+            self.wfile.flush()
+
+            # Tail the file for new content.
+            last_size = log_path.stat().st_size
+            idle_count = 0
+            idle_notified = False
+            max_idle = 300  # 5 minutes of inactivity => disconnect
+
+            while True:
+                time.sleep(1)
+                try:
+                    current_size = log_path.stat().st_size
+                except OSError:
+                    break
+
+                if current_size > last_size:
+                    idle_count = 0
+                    idle_notified = False
+                    with log_path.open("rb") as fh:
+                        fh.seek(last_size)
+                        new_data = fh.read(current_size - last_size).decode(
+                            "utf-8", errors="replace"
+                        )
+                    last_size = current_size
+                    for line in new_data.splitlines():
+                        cleaned = _ANSI_RE.sub("", line)
+                        if cleaned.strip():
+                            self.wfile.write(
+                                f"event: append\ndata: {cleaned}\n\n".encode()
+                            )
+                    self.wfile.flush()
+                else:
+                    idle_count += 1
+                    if idle_count >= 30 and not idle_notified:
+                        self.wfile.write(b"event: idle\ndata: \n\n")
+                        self.wfile.flush()
+                        idle_notified = True
+                    if idle_count >= max_idle:
+                        break
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass  # Client disconnected.
+
+    # ── Action endpoints ──────────────────────────────────
+
+    def _read_json_body(self) -> dict | None:
+        """Read and parse JSON from the request body."""
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length else b""
         try:
-            payload = _json.loads(body) if body else {}
-        except _json.JSONDecodeError:
-            self._json_response_with_status(400, {"error": "Invalid JSON"})
+            return json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            self._json_status(400, {"error": "Invalid JSON"})
+            return None
+
+    def _handle_fix_prs(self) -> None:
+        from lib.engineer import run_fix_pr_pipelines
+
+        payload = self._read_json_body()
+        if payload is None:
             return
 
         slug = payload.get("slug", "")
+        repo = payload.get("repo")  # Optional: specific repo
         if not slug:
-            self._json_response_with_status(400, {"error": "Missing 'slug' field"})
+            self._json_status(400, {"error": "Missing 'slug' field"})
             return
 
-        # Load feature data to get the repo list.
         paths = get_project_paths()
         status = load_status(slug, paths)
         if status is None:
-            self._json_response_with_status(
-                404, {"error": f"Feature '{slug}' not found"}
-            )
+            self._json_status(404, {"error": f"Feature '{slug}' not found"})
             return
 
-        repos = status.get("repos", [])
+        repos = [repo] if repo else status.get("repos", [])
         if not repos:
-            self._json_response_with_status(400, {"error": "No repos for this feature"})
+            self._json_status(400, {"error": "No repos for this feature"})
             return
 
-        # Launch tmux session (returns immediately, does not attach).
         run_fix_pr_pipelines(slug, repos, paths, attach=False)
-
-        # Invalidate cache so the tmux badge appears on the next poll.
-        global _cache, _cache_ts
-        with _cache_lock:
-            _cache = {}
-            _cache_ts = 0.0
-
-        self._json_response_with_status(
-            202, {"status": "started", "slug": slug, "repos": repos}
-        )
+        _invalidate_cache()
+        self._json_status(202, {"status": "started", "slug": slug, "repos": repos})
 
     def _handle_stop_fix_prs(self) -> None:
-        """Kill the fix-pr tmux session for a feature."""
-        import json as _json
-        import subprocess
-
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length) if content_length else b""
-        try:
-            payload = _json.loads(body) if body else {}
-        except _json.JSONDecodeError:
-            self._json_response_with_status(400, {"error": "Invalid JSON"})
+        payload = self._read_json_body()
+        if payload is None:
             return
 
         slug = payload.get("slug", "")
         if not slug:
-            self._json_response_with_status(400, {"error": "Missing 'slug' field"})
+            self._json_status(400, {"error": "Missing 'slug' field"})
             return
 
         session_name = f"fix-pr-{slug}"
@@ -664,25 +592,145 @@ class DashboardHandler(BaseHTTPRequestHandler):
             ["tmux", "kill-session", "-t", session_name],
             capture_output=True,
         )
-
-        # Invalidate cache so the tmux badge disappears on the next poll.
-        global _cache, _cache_ts
-        with _cache_lock:
-            _cache = {}
-            _cache_ts = 0.0
-
+        _invalidate_cache()
         if result.returncode != 0:
-            self._json_response_with_status(
-                404, {"error": f"No active fix-pr session for '{slug}'"}
-            )
+            self._json_status(404, {"error": f"No active fix-pr session for '{slug}'"})
+            return
+        self._json_status(200, {"status": "stopped", "slug": slug})
+
+    def _handle_ci_check(self) -> None:
+        """Trigger CI re-check for a single repo via tmux."""
+        import shlex
+
+        payload = self._read_json_body()
+        if payload is None:
             return
 
-        self._json_response_with_status(200, {"status": "stopped", "slug": slug})
+        slug = payload.get("slug", "")
+        repo = payload.get("repo", "")
+        if not slug or not repo:
+            self._json_status(400, {"error": "Missing 'slug' or 'repo'"})
+            return
+
+        paths = get_project_paths()
+        wt_path = paths.worktree_path(slug, repo)
+        if not wt_path.exists():
+            self._json_status(404, {"error": f"Worktree not found for '{repo}'"})
+            return
+
+        session_name = f"ci-check-{slug}-{repo}"
+        cmd = (
+            f"uv run python lib/repo_runner.py "
+            f"{shlex.quote(slug)} {shlex.quote(repo)} --ci-check"
+        )
+
+        # Kill any existing session first.
+        subprocess.run(
+            ["tmux", "kill-session", "-t", session_name],
+            capture_output=True,
+        )
+
+        subprocess.run(
+            [
+                "tmux",
+                "new-session",
+                "-d",
+                "-s",
+                session_name,
+                "-c",
+                str(paths.root),
+                cmd,
+            ],
+            check=False,
+        )
+        _invalidate_cache()
+        self._json_status(202, {"status": "started", "slug": slug, "repo": repo})
+
+    def _handle_resume(self) -> None:
+        """Resume the pipeline from a specific phase via tmux."""
+        import shlex
+
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        slug = payload.get("slug", "")
+        phase = payload.get("phase", "")
+        if not slug or not phase:
+            self._json_status(400, {"error": "Missing 'slug' or 'phase'"})
+            return
+
+        paths = get_project_paths()
+        status = load_status(slug, paths)
+        if status is None:
+            self._json_status(404, {"error": f"Feature '{slug}' not found"})
+            return
+
+        session_name = f"resume-{slug}"
+        cmd = (
+            f"uv run orchestrate.py --resume {shlex.quote(slug)} "
+            f"--skip-to {shlex.quote(phase)}"
+        )
+
+        subprocess.run(
+            ["tmux", "kill-session", "-t", session_name],
+            capture_output=True,
+        )
+        subprocess.run(
+            [
+                "tmux",
+                "new-session",
+                "-d",
+                "-s",
+                session_name,
+                "-c",
+                str(paths.root),
+                cmd,
+            ],
+            check=False,
+        )
+        _invalidate_cache()
+        self._json_status(202, {"status": "started", "slug": slug, "phase": phase})
+
+    def _handle_cancel(self) -> None:
+        """Cancel all running pipelines for a feature."""
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        slug = payload.get("slug", "")
+        if not slug:
+            self._json_status(400, {"error": "Missing 'slug' field"})
+            return
+
+        paths = get_project_paths()
+        sessions_to_kill = cancel_feature(slug, paths)
+
+        killed = []
+        for session_name in sessions_to_kill:
+            result = subprocess.run(
+                ["tmux", "kill-session", "-t", session_name],
+                capture_output=True,
+            )
+            if result.returncode == 0:
+                killed.append(session_name)
+
+        _invalidate_cache()
+        self._json_status(
+            200,
+            {
+                "status": "cancelled",
+                "slug": slug,
+                "killed_sessions": killed,
+            },
+        )
+
+    # ── Response helpers ──────────────────────────────────
 
     def _json_response(self, data: dict) -> None:
-        self._json_response_with_status(200, data)
+        self._json_status(200, data)
 
-    def _json_response_with_status(self, status_code: int, data: dict) -> None:
+    def _json_status(self, status_code: int, data: dict) -> None:
         body = json.dumps(data).encode()
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
@@ -690,17 +738,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _html_response(self, html: str) -> None:
-        body = html.encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
     def log_message(self, format: str, *args: object) -> None:
         # Suppress default stderr logging for clean terminal output.
         pass
+
+
+# ── Server ────────────────────────────────────────────────────────────
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):

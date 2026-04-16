@@ -93,8 +93,9 @@ Ordered steps the engineer should follow.
 ## Testing Requirements
 What tests to write. Include both unit and integration test expectations.
 
-## Acceptance Criteria
-How to verify this repo's part is done.
+**Important:** Specify which test files/directories map to the changed source
+files so engineers can run targeted tests during development.  The full test
+suite runs in CI; during development, only impacted tests should be executed.
 ```
 
 ## Guidelines

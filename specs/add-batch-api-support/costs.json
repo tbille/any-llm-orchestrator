@@ -1,21 +1,21 @@
 {
-  "total_cost": 98.5825,
-  "total_input_tokens": 1377,
-  "total_output_tokens": 540764,
+  "total_cost": 112.7002,
+  "total_input_tokens": 1633,
+  "total_output_tokens": 612495,
   "total_reasoning_tokens": 0,
-  "total_cache_read": 104138556,
-  "total_cache_write": 5277964,
-  "sessions": 62,
-  "messages": 1252,
+  "total_cache_read": 120552766,
+  "total_cache_write": 5936518,
+  "sessions": 68,
+  "messages": 1496,
   "by_repo": {
     "any-llm": {
-      "cost": 36.7307,
-      "input_tokens": 416,
-      "output_tokens": 150032,
+      "cost": 50.8483,
+      "input_tokens": 672,
+      "output_tokens": 221763,
       "reasoning_tokens": 0,
-      "cache_read": 43733243,
-      "cache_write": 1777794,
-      "messages": 390
+      "cache_read": 60147453,
+      "cache_write": 2436348,
+      "messages": 634
     },
     "gateway": {
       "cost": 22.3611,
@@ -56,40 +56,40 @@
   },
   "by_phase": {
     "engineer": {
-      "cost": 66.336,
-      "input_tokens": 873,
-      "output_tokens": 344969,
+      "cost": 67.6552,
+      "input_tokens": 882,
+      "output_tokens": 352596,
       "reasoning_tokens": 0,
-      "cache_read": 70788538,
-      "cache_write": 3570102,
-      "messages": 793
+      "cache_read": 71425466,
+      "cache_write": 3699711,
+      "messages": 800
     },
     "review": {
-      "cost": 20.152,
-      "input_tokens": 301,
-      "output_tokens": 77288,
+      "cost": 26.3642,
+      "input_tokens": 385,
+      "output_tokens": 102547,
       "reasoning_tokens": 0,
-      "cache_read": 23723980,
-      "cache_write": 1017001,
-      "messages": 279
+      "cache_read": 30804962,
+      "cache_write": 1343387,
+      "messages": 359
     },
     "ci-fix": {
-      "cost": 4.3255,
-      "input_tokens": 114,
-      "output_tokens": 18346,
+      "cost": 6.4877,
+      "input_tokens": 168,
+      "output_tokens": 31671,
       "reasoning_tokens": 0,
-      "cache_read": 5681346,
-      "cache_write": 164094,
-      "messages": 107
+      "cache_read": 8475544,
+      "cache_write": 233171,
+      "messages": 159
     },
     "pr": {
-      "cost": 0.6478,
-      "input_tokens": 7,
-      "output_tokens": 3559,
+      "cost": 5.0717,
+      "input_tokens": 116,
+      "output_tokens": 29079,
       "reasoning_tokens": 0,
-      "cache_read": 211783,
-      "cache_write": 72467,
-      "messages": 5
+      "cache_read": 6113885,
+      "cache_write": 205949,
+      "messages": 110
     },
     "pm": {
       "cost": 1.6521,

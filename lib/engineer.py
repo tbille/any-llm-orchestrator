@@ -8,7 +8,8 @@ import sys
 import time
 from pathlib import Path
 
-from lib.config import CAVEMAN_PROMPT, REPO_BY_NAME, ProjectPaths
+from lib.config import BUILD_PHASE_TIMEOUT, CAVEMAN_PROMPT, REPO_BY_NAME, ProjectPaths
+from lib.parse import parse_cross_review_repos
 
 
 # ── Tmux helpers ──────────────────────────────────────────────────────
@@ -180,10 +181,23 @@ def run_build_pipelines(
     print("  Attaching to tmux session. Use Ctrl-B D to detach.\n")
     _tmux_attach(session_name)
 
-    print("  Waiting for all repo pipelines to finish...")
-    _tmux_wait_for_all_panes(session_name)
+    timeout_min = BUILD_PHASE_TIMEOUT / 60
+    print(
+        f"  Waiting for all repo pipelines to finish "
+        f"(timeout: {timeout_min:.0f} min)..."
+    )
+    all_done = _tmux_wait_for_all_panes(
+        session_name, timeout=float(BUILD_PHASE_TIMEOUT)
+    )
     _tmux_kill_session(session_name)
-    print("  All repo pipelines done.\n")
+    if all_done:
+        print("  All repo pipelines done.\n")
+    else:
+        print(
+            "  [WARN] Build phase timed out. Some repos may not have finished.\n"
+            "  Completed repos will proceed; others may need manual attention.\n",
+            file=sys.stderr,
+        )
 
 
 # ── Cross-repo consistency review ────────────────────────────────────
@@ -204,54 +218,109 @@ def run_cross_repo_review(
     if tech_spec.exists():
         file_args += ["-f", str(tech_spec)]
 
-    # Max characters of diff output per repo to keep the prompt manageable.
-    _MAX_DIFF_CHARS_PER_REPO = 8000
+    # ── Smart diff selection for cross-review ────────────────────────
+    #
+    # Instead of truncating the full diff blindly at N chars, we use a
+    # two-tier strategy:
+    #   1. Full diff for files likely to contain shared contracts (types,
+    #      models, schemas, API definitions, interfaces, protos).
+    #   2. Stat summary only for everything else.
+    #
+    # This ensures the cross-review agent sees the interface definitions
+    # it needs to verify alignment, without drowning in implementation
+    # details.
+
+    _MAX_CONTRACT_DIFF_CHARS = 15000  # per repo, for contract files only
+    _MAX_FULL_DIFF_CHARS = 8000  # fallback: if no contract files found
+
+    # Patterns for files likely to contain shared API contracts.
+    _CONTRACT_PATTERNS = (
+        "**/types.*",
+        "**/models.*",
+        "**/schema*",
+        "**/api.*",
+        "**/interface*",
+        "**/proto*",
+        "**/*.proto",
+        "**/openapi*",
+        "**/contract*",
+        "**/routes.*",
+        "**/endpoints.*",
+    )
 
     diff_sections: list[str] = []
     for name in repo_names:
         wt_path = paths.worktree_path(slug, name)
         if not wt_path.exists():
             continue
-        # Diff against the base branch to capture ALL feature changes.
         repo_info = REPO_BY_NAME.get(name)
         base_branch = repo_info.default_branch if repo_info else "main"
+        diff_range = f"origin/{base_branch}...HEAD"
 
-        # Get the stat summary first (always useful, lightweight).
+        # Always get the stat summary (lightweight).
         stat_result = subprocess.run(
-            ["git", "diff", f"origin/{base_branch}...HEAD", "--stat"],
+            ["git", "diff", diff_range, "--stat"],
             cwd=str(wt_path),
             capture_output=True,
             text=True,
         )
         stat_text = stat_result.stdout.strip() if stat_result.stdout.strip() else ""
 
-        # Get the actual diff content so the reviewer can see interface
-        # definitions, type signatures, and API contracts -- not just
-        # file names.  Truncate to keep prompts manageable.
-        diff_result = subprocess.run(
-            ["git", "diff", f"origin/{base_branch}...HEAD"],
-            cwd=str(wt_path),
-            capture_output=True,
-            text=True,
-        )
-        diff_text = diff_result.stdout.strip() if diff_result.stdout.strip() else ""
-        if len(diff_text) > _MAX_DIFF_CHARS_PER_REPO:
-            diff_text = (
-                diff_text[:_MAX_DIFF_CHARS_PER_REPO]
-                + f"\n\n... (truncated, {len(diff_result.stdout)} chars total)"
+        # Try targeted contract-file diffs first.
+        contract_diff_parts: list[str] = []
+        for pattern in _CONTRACT_PATTERNS:
+            result = subprocess.run(
+                ["git", "diff", diff_range, "--", pattern],
+                cwd=str(wt_path),
+                capture_output=True,
+                text=True,
             )
+            if result.stdout.strip():
+                contract_diff_parts.append(result.stdout.strip())
+
+        contract_diff = "\n".join(contract_diff_parts)
+
+        if contract_diff:
+            # Truncate contract diffs at a generous limit.
+            if len(contract_diff) > _MAX_CONTRACT_DIFF_CHARS:
+                contract_diff = (
+                    contract_diff[:_MAX_CONTRACT_DIFF_CHARS]
+                    + f"\n\n... (truncated, {len(contract_diff)} chars total)"
+                )
+            diff_text = contract_diff
+            diff_label = "Contract/interface files diff"
+        else:
+            # No contract files found -- fall back to full diff with
+            # the original truncation limit.
+            diff_result = subprocess.run(
+                ["git", "diff", diff_range],
+                cwd=str(wt_path),
+                capture_output=True,
+                text=True,
+            )
+            diff_text = diff_result.stdout.strip() if diff_result.stdout.strip() else ""
+            if len(diff_text) > _MAX_FULL_DIFF_CHARS:
+                diff_text = (
+                    diff_text[:_MAX_FULL_DIFF_CHARS]
+                    + f"\n\n... (truncated, {len(diff_result.stdout)} chars total)"
+                )
+            diff_label = "Diff"
 
         section_parts = [f"### {name}"]
         if stat_text:
             section_parts.append(f"**Changed files:**\n```\n{stat_text}\n```")
         if diff_text:
-            section_parts.append(f"**Diff:**\n```diff\n{diff_text}\n```")
+            section_parts.append(f"**{diff_label}:**\n```diff\n{diff_text}\n```")
         if stat_text or diff_text:
             diff_sections.append("\n".join(section_parts))
 
+        # Attach per-repo review and spec files for additional context.
         review = paths.spec_file(slug, f"{name}-review.md")
         if review.exists():
             file_args += ["-f", str(review)]
+        spec = paths.spec_file(slug, f"{name}-spec.md")
+        if spec.exists():
+            file_args += ["-f", str(spec)]
 
     diffs_text = "\n\n".join(diff_sections) if diff_sections else "No diffs available."
 
@@ -308,72 +377,14 @@ def _parse_affected_repos_from_cross_review(
 ) -> list[str]:
     """Read cross-review.md and return repos that have actionable findings.
 
-    Tries two strategies:
-    1. Parse a machine-readable JSON block (``{"affected_repos": [...]}``)
-       that the cross-review agent is instructed to include.
-    2. Fall back to scanning the markdown for repo names mentioned in
-       table rows or anywhere in the document (excluding informational
-       findings).
+    Delegates to ``lib.parse.parse_cross_review_repos`` which tries:
+    1. Machine-readable JSON block with ``affected_repos`` key.
+    2. Summary-of-findings table rows (excluding "informational").
+    3. Returns empty list if neither strategy finds anything.
 
-    Only returns repos that are in ``candidate_repos``.
+    Only returns repos that are in *candidate_repos*.
     """
-    import json
-    import re
-
-    if not cross_review_file.exists():
-        return []
-
-    content = cross_review_file.read_text(encoding="utf-8")
-    affected: set[str] = set()
-
-    # Strategy 1: Try to find a JSON block with affected_repos.
-    json_pattern = re.compile(r"```json\s*\n(.*?)\n\s*```", re.DOTALL)
-    for match in json_pattern.finditer(content):
-        try:
-            data = json.loads(match.group(1))
-            if isinstance(data, dict) and "affected_repos" in data:
-                repos = data["affected_repos"]
-                if isinstance(repos, list):
-                    found = [r for r in repos if r in candidate_repos]
-                    if found or repos == []:
-                        # Trust the JSON block: return it (may be empty).
-                        return found
-        except (json.JSONDecodeError, KeyError):
-            continue
-
-    # Strategy 2: Parse the summary table (flexible column matching).
-    in_summary = False
-    for line in content.splitlines():
-        if "summary" in line.lower() and "finding" in line.lower():
-            in_summary = True
-            continue
-        if in_summary and line.strip().startswith("|"):
-            parts = [p.strip() for p in line.split("|")]
-            # Skip header/separator rows.
-            if len(parts) < 3:
-                continue
-            if any(p in ("#", "---", "") for p in parts[1:2]):
-                continue
-            if "---" in line:
-                continue
-            # Check if any column contains "informational" (skip it).
-            row_text = line.lower()
-            if "informational" in row_text:
-                continue
-            # Match repo names anywhere in the row.
-            for repo in candidate_repos:
-                if repo in line:
-                    affected.add(repo)
-
-    # NOTE: Previously there was a broad "Strategy 3" fallback that
-    # matched ANY mention of a repo name anywhere in the document.
-    # This was removed because it triggered false-positive fix rounds
-    # for repos that were only mentioned informationally.  If both the
-    # JSON block (strategy 1) and table parse (strategy 2) fail, we
-    # default to an empty list -- the cross-review prompt already
-    # instructs the agent to include the JSON block.
-
-    return [r for r in candidate_repos if r in affected]
+    return parse_cross_review_repos(cross_review_file, candidate_repos)
 
 
 def run_cross_review_fixes(

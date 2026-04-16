@@ -25,10 +25,71 @@ from lib.config import (
     MAX_CI_FIX_ROUNDS,
     MAX_REVIEW_ROUNDS,
     REPO_BY_NAME,
+    RepoInfo,
     ProjectPaths,
     get_project_paths,
 )
+from lib.parse import ReviewVerdict, parse_review_verdict
 from lib.status import update_repo_step
+
+
+# ── Addressed-comments manifest ──────────────────────────────────────
+#
+# Tracks which PR review comments have already been sent to an engineer
+# agent for fixing.  Prevents re-addressing the same comments on retry
+# (e.g. after a crash or manual ``--fix-pr`` re-invocation).
+#
+# Manifest lives at  specs/<slug>/<repo>-addressed-comments.json
+# Schema:
+#   { "fix_rounds": [ { "timestamp", "commit_before", "commit_after",
+#                        "comment_ids": [str, ...] } ] }
+
+
+def _addressed_manifest_path(slug: str, repo_name: str, paths: ProjectPaths) -> Path:
+    return paths.spec_file(slug, f"{repo_name}-addressed-comments.json")
+
+
+def _load_addressed_manifest(slug: str, repo_name: str, paths: ProjectPaths) -> dict:
+    """Load the addressed-comments manifest, or return an empty one."""
+    import json as _json
+
+    manifest_path = _addressed_manifest_path(slug, repo_name, paths)
+    if not manifest_path.exists():
+        return {"fix_rounds": []}
+    try:
+        return _json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (_json.JSONDecodeError, OSError):
+        return {"fix_rounds": []}
+
+
+def _save_addressed_manifest(
+    slug: str, repo_name: str, paths: ProjectPaths, data: dict
+) -> None:
+    """Write the addressed-comments manifest."""
+    import json as _json
+
+    paths.ensure_spec_dirs(slug)
+    manifest_path = _addressed_manifest_path(slug, repo_name, paths)
+    manifest_path.write_text(_json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _all_addressed_ids(manifest: dict) -> set[str]:
+    """Return the union of all comment IDs across every fix round."""
+    ids: set[str] = set()
+    for fix_round in manifest.get("fix_rounds", []):
+        ids.update(fix_round.get("comment_ids", []))
+    return ids
+
+
+def _get_head_sha(wt_path: Path) -> str:
+    """Return the current HEAD commit SHA for a worktree."""
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(wt_path),
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
 
 
 # ── Opencode runner ───────────────────────────────────────────────────
@@ -107,6 +168,9 @@ def step_engineer(
         review_file = paths.spec_file(slug, f"{repo_name}-review.md")
         if review_file.exists():
             file_args += ["-f", str(review_file)]
+        build_failure_file = paths.spec_file(slug, f"{repo_name}-build-failures.md")
+        if build_failure_file.exists():
+            file_args += ["-f", str(build_failure_file)]
 
     scope_note = ""
     if repo_info and repo_info.scope_notes:
@@ -130,8 +194,9 @@ def step_engineer(
 
     if is_fix_round:
         message = (
-            f"Review the code review feedback in the attached review file and "
-            f"fix the issues found. This is a {lang} project."
+            f"Fix the issues found in the attached file(s). This is a {lang} project. "
+            f"If a review file is attached, address the review feedback. "
+            f"If a build-failures file is attached, fix the failing tests."
             f"{scope_note}{commit_instructions}{repo_scope}"
         )
     else:
@@ -142,11 +207,14 @@ def step_engineer(
             f"{scope_note}{commit_instructions}{repo_scope}"
         )
 
-    # Simple-bug path: no spec file, use input directly.
+    # Simple-bug path: no spec file, use input and investigation note.
     if not spec_file.exists():
         input_file = paths.spec_file(slug, "input.md")
         if input_file.exists():
             file_args += ["-f", str(input_file)]
+        investigation_file = paths.spec_file(slug, f"{repo_name}-investigation.md")
+        if investigation_file.exists():
+            file_args += ["-f", str(investigation_file)]
         message = (
             f"Fix the bug described in the attached issue for this {lang} project. "
             f"Follow the repository's existing patterns."
@@ -160,6 +228,343 @@ def step_engineer(
         print(f"  [{repo_name}] Engineer agent exited with code {rc}", file=sys.stderr)
 
 
+# ── Step: Investigate (simple bugs only) ──────────────────────────────
+
+
+_INVESTIGATION_TIMEOUT = 120  # 2 minutes for a quick investigation
+
+
+def step_investigate(
+    slug: str,
+    repo_name: str,
+    paths: ProjectPaths,
+) -> None:
+    """Run a quick headless investigation for simple bugs.
+
+    Reads the issue and scans the repo to produce a one-paragraph
+    investigation note identifying the likely root cause and which
+    files to change.  Gives the engineer agent focused context rather
+    than a raw issue body.
+
+    Only called for simple bugs where no per-repo spec exists.
+    """
+    wt_path = paths.worktree_path(slug, repo_name)
+    input_file = paths.spec_file(slug, "input.md")
+    investigation_file = paths.spec_file(slug, f"{repo_name}-investigation.md")
+    repo_info = REPO_BY_NAME.get(repo_name)
+    lang = repo_info.language if repo_info else "unknown"
+
+    if investigation_file.exists():
+        print(f"  [{repo_name}] Investigation note already exists, skipping.")
+        return
+
+    if not input_file.exists():
+        return
+
+    message = (
+        f"You are investigating a bug in this {lang} repository. "
+        f"Read the attached issue and scan the codebase to identify: "
+        f"1. The likely root cause (which file(s) and function(s)). "
+        f"2. A brief fix approach (1-2 sentences). "
+        f"3. Which tests to update or add. "
+        f"Write a SHORT investigation note (under 500 words) to: "
+        f"{investigation_file} "
+        f"Do NOT make any code changes. Only investigate and write the note."
+    )
+
+    log_file = paths.logs_dir(slug) / f"{repo_name}-investigate.log"
+    prompt_file = paths.logs_dir(slug) / f"{repo_name}-investigate-prompt.md"
+    _write_prompt(prompt_file, message, phase="investigate")
+
+    file_args = ["-f", str(input_file)]
+
+    print(f"  [{repo_name}] Running quick investigation...")
+    _run_opencode(wt_path, prompt_file, file_args, log_file)
+
+
+# ── Targeted test detection ──────────────────────────────────────────
+#
+# These helpers detect which files changed on the feature branch and
+# map them to test targets so the build-check step can run only the
+# impacted tests.  The full suite is left to CI (step_ci_watch).
+
+
+def _get_changed_files(wt_path: Path, default_branch: str) -> list[str]:
+    """Return files changed on the feature branch relative to the base.
+
+    Uses ``git diff --name-only origin/<default_branch>...HEAD`` to find
+    all files that differ between the upstream base and the current work.
+    Returns an empty list on any git error (caller should fall back to
+    the full test suite).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", f"origin/{default_branch}...HEAD"],
+            cwd=str(wt_path),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return []
+        return [f for f in result.stdout.strip().splitlines() if f]
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+
+
+def _map_python_test_targets(
+    changed_files: list[str],
+    wt_path: Path,
+) -> list[str]:
+    """Map changed Python source files to existing test files.
+
+    Heuristic:
+    - For a source file ``src/pkg/module.py``, look for
+      ``tests/**/test_module.py``.
+    - For a file already under ``tests/``, include it directly.
+    - Only returns paths that actually exist in the worktree.
+    """
+    targets: list[str] = []
+    seen: set[str] = set()
+
+    for fpath in changed_files:
+        if not fpath.endswith(".py"):
+            continue
+
+        # If the changed file is itself a test file, include it directly.
+        if "/tests/" in fpath or fpath.startswith("tests/"):
+            if (wt_path / fpath).exists() and fpath not in seen:
+                targets.append(fpath)
+                seen.add(fpath)
+            continue
+
+        # Extract the module base name and search for a matching test file.
+        stem = Path(fpath).stem  # e.g. "models" from "src/app/models.py"
+        test_name = f"test_{stem}.py"
+
+        # Search the worktree for matching test files.
+        for candidate in wt_path.rglob(test_name):
+            rel = str(candidate.relative_to(wt_path))
+            if rel not in seen:
+                targets.append(rel)
+                seen.add(rel)
+
+    return targets
+
+
+def _map_rust_test_targets(changed_files: list[str]) -> list[str]:
+    """Map changed Rust files to ``cargo test`` filter arguments.
+
+    Cargo accepts test name filters (substring match against test
+    function names and module paths).  We extract module names from
+    changed ``.rs`` source files and use them as filters.
+
+    Returns a list of module-name filters.  If empty, caller should
+    fall back to the full suite.
+    """
+    modules: list[str] = []
+    seen: set[str] = set()
+    for fpath in changed_files:
+        if not fpath.endswith(".rs"):
+            continue
+        stem = Path(fpath).stem  # e.g. "client" from "src/client.rs"
+        if stem in ("mod", "lib", "main"):
+            continue  # too broad, skip
+        if stem not in seen:
+            modules.append(stem)
+            seen.add(stem)
+    return modules
+
+
+def _map_go_test_targets(changed_files: list[str]) -> list[str]:
+    """Map changed Go files to package paths for ``go test``.
+
+    Go tests are package-scoped, so we collect the unique directories
+    of changed ``.go`` files and format them as ``./dir/...`` targets.
+    """
+    packages: set[str] = set()
+    for fpath in changed_files:
+        if not fpath.endswith(".go"):
+            continue
+        pkg_dir = str(Path(fpath).parent)
+        if pkg_dir == ".":
+            packages.add("./...")
+        else:
+            packages.add(f"./{pkg_dir}/...")
+    return sorted(packages)
+
+
+def _map_ts_test_targets(
+    changed_files: list[str],
+    wt_path: Path,
+) -> list[str]:
+    """Map changed TypeScript files to test file paths.
+
+    Heuristic:
+    - For a source file ``src/foo.ts``, look for
+      ``**/*.test.ts`` or ``**/*.spec.ts`` with matching stem.
+    - For a file already matching test/spec pattern, include directly.
+    """
+    targets: list[str] = []
+    seen: set[str] = set()
+    ts_exts = (".ts", ".tsx", ".js", ".jsx")
+
+    for fpath in changed_files:
+        if not any(fpath.endswith(ext) for ext in ts_exts):
+            continue
+
+        # Already a test file?
+        if ".test." in fpath or ".spec." in fpath:
+            if (wt_path / fpath).exists() and fpath not in seen:
+                targets.append(fpath)
+                seen.add(fpath)
+            continue
+
+        # Search for matching test files.
+        stem = Path(fpath).stem
+        for pattern in (f"{stem}.test.*", f"{stem}.spec.*"):
+            for candidate in wt_path.rglob(pattern):
+                # Skip node_modules.
+                rel = str(candidate.relative_to(wt_path))
+                if "node_modules" in rel:
+                    continue
+                if rel not in seen:
+                    targets.append(rel)
+                    seen.add(rel)
+
+    return targets
+
+
+def _build_targeted_command(
+    repo_info: RepoInfo,
+    changed_files: list[str],
+    wt_path: Path,
+) -> str | None:
+    """Build a targeted test command from changed files, or None to fall back.
+
+    Returns the shell command string with ``{targets}`` replaced, or
+    *None* if no targeted command is configured or no test targets
+    could be identified (meaning the caller should run the full suite).
+    """
+    if not repo_info.targeted_test_command:
+        return None
+
+    lang = repo_info.language
+    if lang == "python":
+        targets = _map_python_test_targets(changed_files, wt_path)
+        if not targets:
+            return None
+        return repo_info.targeted_test_command.format(targets=" ".join(targets))
+
+    if lang == "rust":
+        targets = _map_rust_test_targets(changed_files)
+        if not targets:
+            return None
+        # cargo test accepts a filter pattern; multiple modules are
+        # OR'd via pipe as a regex.
+        filter_pattern = "|".join(targets)
+        return repo_info.targeted_test_command.format(targets=filter_pattern)
+
+    if lang == "go":
+        targets = _map_go_test_targets(changed_files)
+        if not targets:
+            return None
+        return repo_info.targeted_test_command.format(targets=" ".join(targets))
+
+    if lang == "typescript":
+        targets = _map_ts_test_targets(changed_files, wt_path)
+        if not targets:
+            return None
+        return repo_info.targeted_test_command.format(targets=" ".join(targets))
+
+    # Unknown language -- no targeted command.
+    return None
+
+
+# ── Step: Build check (pre-review test execution) ────────────────────
+
+
+_BUILD_CHECK_TIMEOUT = 300  # 5 minutes max for test suite
+
+
+def step_build_check(
+    slug: str,
+    repo_name: str,
+    paths: ProjectPaths,
+) -> bool:
+    """Run relevant tests and return True if they pass.
+
+    Tries to run only the tests affected by the current changes
+    (via ``targeted_test_command`` + git-diff detection).  Falls back
+    to the full ``test_command`` when targeted execution is not
+    available or no impacted test files can be identified.
+
+    The full test suite is left to CI (``step_ci_watch``).
+    """
+    repo_info = REPO_BY_NAME.get(repo_name)
+    if not repo_info or not repo_info.test_command:
+        return True
+
+    wt_path = paths.worktree_path(slug, repo_name)
+    log_file = paths.logs_dir(slug) / f"{repo_name}-build-check.log"
+
+    # ── Attempt targeted test execution ──────────────────────────
+    command: str | None = None
+    changed_files = _get_changed_files(wt_path, repo_info.default_branch)
+
+    if changed_files:
+        command = _build_targeted_command(repo_info, changed_files, wt_path)
+
+    if command:
+        print(f"  [{repo_name}] Running targeted build check: {command}")
+    else:
+        command = repo_info.test_command
+        print(f"  [{repo_name}] Running full build check (fallback): {command}")
+
+    # ── Execute ──────────────────────────────────────────────────
+    try:
+        result = subprocess.run(
+            ["sh", "-c", command],
+            cwd=str(wt_path),
+            capture_output=True,
+            text=True,
+            timeout=_BUILD_CHECK_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"  [{repo_name}] Build check timed out after {_BUILD_CHECK_TIMEOUT}s")
+        log_file.write_text(
+            f"Build check timed out after {_BUILD_CHECK_TIMEOUT}s\n",
+            encoding="utf-8",
+        )
+        return False
+
+    # Write output to log for debugging.
+    output = result.stdout + "\n" + result.stderr
+    log_file.write_text(output, encoding="utf-8")
+
+    if result.returncode == 0:
+        print(f"  [{repo_name}] Build check passed.")
+        return True
+
+    # Truncate output for the failure summary.
+    lines = output.strip().splitlines()
+    tail = "\n".join(lines[-30:]) if len(lines) > 30 else "\n".join(lines)
+    print(f"  [{repo_name}] Build check FAILED (exit {result.returncode}):")
+    print(f"    ...last lines:\n{tail}")
+
+    # Write a failure summary for the engineer to use on retry.
+    failure_file = paths.spec_file(slug, f"{repo_name}-build-failures.md")
+    failure_file.write_text(
+        f"# Build Check Failures: {repo_name}\n\n"
+        f"**Command:** `{command}`\n"
+        f"**Exit code:** {result.returncode}\n\n"
+        f"## Output (last 80 lines)\n\n"
+        f"```\n{chr(10).join(lines[-80:])}\n```\n",
+        encoding="utf-8",
+    )
+    return False
+
+
 # ── Step: Review ──────────────────────────────────────────────────────
 
 
@@ -169,8 +574,8 @@ def step_review(
     paths: ProjectPaths,
     *,
     is_followup: bool = False,
-) -> bool:
-    """Run the code review agent. Returns True if review passed.
+) -> ReviewVerdict:
+    """Run the code review agent. Returns a structured ReviewVerdict.
 
     When *is_followup* is True, the reviewer focuses on verifying that
     previously flagged issues were fixed rather than doing a full review
@@ -189,6 +594,12 @@ def step_review(
 
     repo_scope = _REPO_SCOPE_INSTRUCTION.format(repo_name=repo_name)
 
+    verdict_instruction = (
+        " IMPORTANT: At the very end of the review file, include a machine-readable "
+        "verdict as an HTML comment on its own line: "
+        '<!-- VERDICT: {"status": "PASS", "blockers": 0, "majors": 0, "minors": 0} -->'
+    )
+
     if is_followup and review_file.exists():
         # Attach the prior review so the reviewer knows what to verify.
         file_args += ["-f", str(review_file)]
@@ -205,7 +616,7 @@ def step_review(
             f"## Previously Flagged Issues (status of each: FIXED or STILL_OPEN) "
             f"## New Issues Found (if any) "
             f"## Recommendations (list improvements)"
-            f"{repo_scope}"
+            f"{verdict_instruction}{repo_scope}"
         )
     else:
         message = (
@@ -218,7 +629,7 @@ def step_review(
             f"## Status: PASS or NEEDS_CHANGES "
             f"## Issues Found (list each issue) "
             f"## Recommendations (list improvements)"
-            f"{repo_scope}"
+            f"{verdict_instruction}{repo_scope}"
         )
 
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-review-prompt.md"
@@ -227,10 +638,7 @@ def step_review(
     if rc != 0:
         print(f"  [{repo_name}] Review agent exited with code {rc}", file=sys.stderr)
 
-    if review_file.exists():
-        content = review_file.read_text(encoding="utf-8").upper()
-        return "NEEDS_CHANGES" not in content
-    return True
+    return parse_review_verdict(review_file)
 
 
 # ── Step: PR ──────────────────────────────────────────────────────────
@@ -305,14 +713,38 @@ def _try_deterministic_pr(
     commits = (
         log_result.stdout.strip().splitlines() if log_result.stdout.strip() else []
     )
+
+    # Build a descriptive PR title from the spec's Context section.
     title = f"{slug}: {repo_name}"
+    spec_file = paths.spec_file(slug, f"{repo_name}-spec.md")
+    if spec_file.exists():
+        spec_text = spec_file.read_text(encoding="utf-8")
+        for line in spec_text.splitlines():
+            stripped = line.strip()
+            # Use the first heading after "# Implementation Spec:" as base.
+            if stripped.startswith("# ") and "Implementation Spec" not in stripped:
+                title = f"[{slug}] {stripped.lstrip('# ').strip()}"
+                break
+        else:
+            # Fall back to first sentence of the Context section.
+            for i, line in enumerate(spec_text.splitlines()):
+                if line.strip().startswith("## Context"):
+                    rest = spec_text.splitlines()[i + 1 :]
+                    for ctx_line in rest:
+                        ctx_stripped = ctx_line.strip()
+                        if ctx_stripped and not ctx_stripped.startswith("#"):
+                            # First non-empty, non-heading line.
+                            first_sentence = ctx_stripped.split(". ")[0]
+                            if len(first_sentence) > 80:
+                                first_sentence = first_sentence[:77] + "..."
+                            title = f"[{slug}] {first_sentence}"
+                            break
+                    break
 
     # Build body from spec summary + commit list.
     body_lines = ["## Summary", ""]
-    spec_file = paths.spec_file(slug, f"{repo_name}-spec.md")
     if spec_file.exists():
         # Use the first paragraph of the spec's Context section as summary.
-        spec_text = spec_file.read_text(encoding="utf-8")
         for line in spec_text.splitlines():
             if line.startswith("## Context"):
                 idx = spec_text.index(line) + len(line)
@@ -515,11 +947,13 @@ def step_ci_watch(
 def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
     """Fetch PR review comments and send the engineer to address them.
 
-    Collects **all** feedback on the PR:
-    - Top-level review bodies (approve / request-changes summaries)
-    - General conversation comments
-    - Inline review comments on specific files and lines (via the REST API)
-    - The overall review decision
+    Collects feedback on the PR (top-level reviews, inline code comments,
+    general conversation comments, review decision) and filters out any
+    comments that were already addressed in a previous fix round.  The
+    addressed-comments manifest at ``<repo>-addressed-comments.json``
+    tracks comment IDs across invocations so that re-running ``--fix-pr``
+    after a crash or manual restart only presents *new* feedback to the
+    engineer agent.
     """
     import json as _json
 
@@ -602,7 +1036,20 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
             except _json.JSONDecodeError:
                 inline_comments = []
 
-    # ── 4. Build feedback markdown ────────────────────────────────────
+    # ── 4. Load addressed-comments manifest & filter ────────────────
+    manifest = _load_addressed_manifest(slug, repo_name, paths)
+    addressed_ids = _all_addressed_ids(manifest)
+    commit_before = _get_head_sha(wt_path)
+
+    # IDs of comments included in *this* fix round (recorded after push).
+    round_comment_ids: list[str] = []
+
+    # ── 5. Build feedback markdown (new comments only) ────────────────
+    reviews = data.get("reviews") or []
+    comments = data.get("comments") or []
+
+    total_reviews = len(reviews)
+
     lines = [
         f"# PR Review Feedback: {repo_name}",
         f"",
@@ -616,11 +1063,20 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
         lines.append("")
 
     # Top-level review bodies (approve / changes-requested summaries).
-    reviews = data.get("reviews") or []
-    if reviews:
+    new_reviews: list[dict] = []
+    for review in reviews:
+        review_id = str(review.get("id", ""))
+        if review_id and review_id in addressed_ids:
+            continue
+        new_reviews.append(review)
+
+    if new_reviews:
         lines.append("## Reviews")
         lines.append("")
-        for review in reviews:
+        for review in new_reviews:
+            review_id = str(review.get("id", ""))
+            if review_id:
+                round_comment_ids.append(review_id)
             author = review.get("author", {}).get("login", "unknown")
             state = review.get("state", "")
             body = review.get("body", "").strip()
@@ -631,21 +1087,33 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
             lines.append("")
 
     # Inline review comments (file/line-level code feedback).
-    if inline_comments:
+    # Filter empty-body comments first (they never count as feedback).
+    inline_with_body = [ic for ic in inline_comments if ic.get("body", "").strip()]
+    total_inline = len(inline_with_body)
+
+    new_inline: list[dict] = []
+    for ic in inline_with_body:
+        ic_id = str(ic.get("id", ""))
+        if ic_id and ic_id in addressed_ids:
+            continue
+        new_inline.append(ic)
+
+    if new_inline:
         lines.append("## Inline Code Comments")
         lines.append("")
         lines.append(
             "These are comments left on specific files and lines. Address each one."
         )
         lines.append("")
-        for ic in inline_comments:
+        for ic in new_inline:
+            ic_id = str(ic.get("id", ""))
+            if ic_id:
+                round_comment_ids.append(ic_id)
             author = ic.get("user", {}).get("login", "unknown")
             file_path = ic.get("path", "unknown")
             line = ic.get("original_line") or ic.get("line") or "?"
             body = ic.get("body", "").strip()
             diff_hunk = ic.get("diff_hunk", "").strip()
-            if not body:
-                continue
             lines.append(f"### `{file_path}` (line {line}) — @{author}")
             if diff_hunk:
                 lines.append("")
@@ -660,34 +1128,58 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
             lines.append("")
 
     # General conversation comments (not attached to specific lines).
-    comments = data.get("comments") or []
-    if comments:
+    # Filter empty-body comments first.
+    general_with_body = [c for c in comments if c.get("body", "").strip()]
+    total_general = len(general_with_body)
+
+    new_general: list[dict] = []
+    for comment in general_with_body:
+        comment_id = str(comment.get("id", ""))
+        if comment_id and comment_id in addressed_ids:
+            continue
+        new_general.append(comment)
+
+    if new_general:
         lines.append("## General Comments")
         lines.append("")
-        for comment in comments:
+        for comment in new_general:
+            comment_id = str(comment.get("id", ""))
+            if comment_id:
+                round_comment_ids.append(comment_id)
             author = comment.get("author", {}).get("login", "unknown")
             body = comment.get("body", "").strip()
-            if body:
-                lines.append(f"**@{author}:** {body}")
-                lines.append("")
+            lines.append(f"**@{author}:** {body}")
+            lines.append("")
+
+    # Add a note about previously addressed comments (if any were filtered).
+    skipped = (
+        (total_reviews - len(new_reviews))
+        + (total_inline - len(new_inline))
+        + (total_general - len(new_general))
+    )
+    if skipped:
+        lines.insert(
+            5, f"**Note:** {skipped} previously addressed comment(s) omitted.\n"
+        )
 
     feedback_content = "\n".join(lines)
     feedback_file.write_text(feedback_content, encoding="utf-8")
 
-    has_feedback = reviews or inline_comments or comments
+    new_count = len(new_reviews) + len(new_inline) + len(new_general)
     print(
-        f"  [{repo_name}] Feedback saved: "
-        f"{len(reviews)} reviews, "
-        f"{len(inline_comments)} inline comments, "
-        f"{len(comments)} general comments"
+        f"  [{repo_name}] Feedback: "
+        f"{len(new_reviews)}/{total_reviews} reviews, "
+        f"{len(new_inline)}/{total_inline} inline, "
+        f"{len(new_general)}/{total_general} general "
+        f"({skipped} previously addressed)"
     )
 
-    if not has_feedback:
-        print(f"  [{repo_name}] No review comments found on the PR.")
+    if new_count == 0:
+        print(f"  [{repo_name}] No new review comments to address — skipping agent.")
         update_repo_step(slug, repo_name, "done", paths)
         return
 
-    # ── 5. Send engineer to fix ───────────────────────────────────────
+    # ── 6. Send engineer to fix ───────────────────────────────────────
     test_note = ""
     if repo_info and repo_info.test_hints:
         test_note = f" TESTING: {repo_info.test_hints}"
@@ -725,6 +1217,26 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
         )
     else:
         print(f"  [{repo_name}] PR fixes pushed.")
+
+    # ── 7. Record addressed comments in manifest ─────────────────────
+    commit_after = _get_head_sha(wt_path)
+    if round_comment_ids:
+        from datetime import datetime, timezone
+
+        manifest["fix_rounds"].append(
+            {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "commit_before": commit_before,
+                "commit_after": commit_after,
+                "comment_ids": round_comment_ids,
+            }
+        )
+        _save_addressed_manifest(slug, repo_name, paths, manifest)
+        print(
+            f"  [{repo_name}] Recorded {len(round_comment_ids)} addressed "
+            f"comment(s) in manifest."
+        )
+
     update_repo_step(slug, repo_name, "done", paths)
 
 
@@ -921,8 +1433,27 @@ def run_repo_pipeline(
     print(f"  [{repo_name}] Starting build pipeline")
     print(f"{'=' * 50}\n")
 
-    # Engineer + review loop.
+    # For simple bugs (no spec file), run a quick investigation step
+    # so the engineer has focused context rather than a raw issue body.
+    spec_file = paths.spec_file(slug, f"{repo_name}-spec.md")
+    if not spec_file.exists():
+        print(f"\n  [{repo_name}] -> investigate (simple bug)")
+        update_repo_step(slug, repo_name, "investigate", paths)
+        step_investigate(slug, repo_name, paths)
+
+    # Engineer + build-check + review loop.
+    #
+    # The loop only triggers a fix round when the review contains
+    # BLOCKER or MAJOR issues.  MINOR-only reviews proceed directly
+    # to PR creation (non-draft) to avoid wasteful AI-to-AI cycles
+    # that produce diminishing returns.
+    #
+    # A lightweight build-check step runs the test suite between
+    # engineer and review.  If tests fail, the engineer gets one
+    # immediate retry with the failure output before the review
+    # cycle begins.
     review_passed = False
+    verdict: ReviewVerdict | None = None
     for review_round in range(max_review_rounds):
         is_fix = review_round > 0
         step_label = f"engineer-fix-{review_round}" if is_fix else "engineer"
@@ -931,20 +1462,46 @@ def run_repo_pipeline(
         update_repo_step(slug, repo_name, step_label, paths)
         step_engineer(slug, repo_name, paths, is_fix_round=is_fix)
 
+        # Pre-review build check: run tests before wasting a review cycle.
+        print(f"\n  [{repo_name}] -> build-check")
+        update_repo_step(slug, repo_name, "build-check", paths)
+        if not step_build_check(slug, repo_name, paths):
+            # Tests failed.  Give the engineer one shot to fix with the
+            # failure output as context, then proceed to review regardless.
+            print(f"  [{repo_name}] Tests failed, running engineer fix...")
+            update_repo_step(slug, repo_name, "build-fix", paths)
+            step_engineer(slug, repo_name, paths, is_fix_round=True)
+
         print(f"\n  [{repo_name}] -> review (round {review_round + 1})")
         update_repo_step(slug, repo_name, f"review-{review_round + 1}", paths)
-        review_passed = step_review(
+        verdict = step_review(
             slug,
             repo_name,
             paths,
             is_followup=is_fix,
         )
 
-        if review_passed:
-            print(f"  [{repo_name}] Review passed.")
+        print(
+            f"  [{repo_name}] Review: {verdict.status} "
+            f"(B:{verdict.blockers} M:{verdict.majors} m:{verdict.minors})"
+        )
+
+        if verdict.passed:
+            review_passed = True
             update_repo_step(slug, repo_name, "review-passed", paths)
             break
-        print(f"  [{repo_name}] Review: needs changes.")
+
+        if not verdict.has_blocking_issues:
+            # Only MINOR issues -- not worth another engineer round.
+            print(
+                f"  [{repo_name}] Only minor issues found; "
+                f"skipping fix round, proceeding to PR."
+            )
+            review_passed = True
+            update_repo_step(slug, repo_name, "review-passed", paths)
+            break
+
+        print(f"  [{repo_name}] Review: blocking issues found, fixing...")
 
     if not review_passed:
         print(
@@ -977,11 +1534,17 @@ if __name__ == "__main__":
         run_cross_review_fix_pipeline(sys.argv[1], sys.argv[2])
     elif flag == "--fix-pr":
         run_fix_pr_pipeline(sys.argv[1], sys.argv[2])
+    elif flag == "--ci-check":
+        paths = get_project_paths()
+        update_repo_step(sys.argv[1], sys.argv[2], "ci-watch", paths)
+        step_ci_watch(sys.argv[1], sys.argv[2], paths)
+        update_repo_step(sys.argv[1], sys.argv[2], "done", paths)
     elif len(sys.argv) == 3:
         run_repo_pipeline(sys.argv[1], sys.argv[2])
     else:
         print(
-            f"Usage: {sys.argv[0]} <slug> <repo-name> [--fix-cross-review|--fix-pr]",
+            f"Usage: {sys.argv[0]} <slug> <repo-name> "
+            f"[--fix-cross-review|--fix-pr|--ci-check]",
             file=sys.stderr,
         )
         sys.exit(1)

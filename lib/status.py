@@ -263,6 +263,38 @@ def update_repo_step(
         _save_status(slug, data, paths)
 
 
+# ── Cancel feature ────────────────────────────────────────────────────
+
+
+def cancel_feature(slug: str, paths: ProjectPaths) -> list[str]:
+    """Mark a feature as cancelled and return tmux sessions to kill.
+
+    Updates status.json: running phases become "failed", current_phase
+    set to the last running phase.  Returns a list of tmux session name
+    patterns to kill (e.g. ``["build-<slug>", "fix-pr-<slug>"]``).
+    """
+    killed_sessions: list[str] = []
+
+    with _status_lock(slug, paths):
+        data = load_status(slug, paths)
+        if data is None:
+            return killed_sessions
+
+        for phase_name, phase_data in data.get("phases", {}).items():
+            if phase_data.get("status") == "running":
+                phase_data["status"] = "failed"
+                phase_data["finished_at"] = _now()
+
+        data["current_phase"] = "cancelled"
+        _save_status(slug, data, paths)
+
+    # Collect tmux session names to kill.
+    for prefix in ("build-", "fix-pr-", "xfix-"):
+        killed_sessions.append(prefix + slug)
+
+    return killed_sessions
+
+
 # ── Load all features ─────────────────────────────────────────────────
 
 

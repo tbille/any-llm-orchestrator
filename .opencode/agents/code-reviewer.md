@@ -82,3 +82,18 @@ Optional improvements that aren't blockers.
 
 If Status is PASS, there should be no BLOCKER or MAJOR issues.
 If Status is NEEDS_CHANGES, there must be at least one BLOCKER or MAJOR issue.
+
+## Machine-readable verdict (REQUIRED)
+
+At the very end of the review file, you MUST include a verdict block as an HTML comment. This is parsed by the orchestrator to decide next steps:
+
+```
+<!-- VERDICT: {"status": "PASS", "blockers": 0, "majors": 0, "minors": 0} -->
+```
+
+- `status`: "PASS" or "NEEDS_CHANGES" (must match the ## Status heading)
+- `blockers`: count of BLOCKER issues
+- `majors`: count of MAJOR issues
+- `minors`: count of MINOR issues
+
+This line must appear on its own at the end of the file. Do not omit it.

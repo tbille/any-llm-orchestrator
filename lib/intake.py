@@ -6,7 +6,7 @@ import json
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from lib.config import CLASSIFIER_TIMEOUT, ECOSYSTEM_CONTEXT, REPO_BY_NAME, ProjectPaths
@@ -225,20 +225,11 @@ def _extract_reply(raw_output: str) -> str:
 
 def _parse_triage_json(text: str, raw_input: str) -> TriageResult:
     """Extract the JSON object from the classifier's reply."""
-    # Strip markdown fences if the model included them anyway.
-    cleaned = re.sub(r"```(?:json)?\s*", "", text)
-    cleaned = cleaned.strip().rstrip("`")
+    from lib.parse import parse_classifier_json
 
-    # Find the first JSON object in the text.
-    brace_start = cleaned.find("{")
-    brace_end = cleaned.rfind("}")
-    if brace_start == -1 or brace_end == -1:
+    data = parse_classifier_json(text, required_keys=["type", "repos", "slug"])
+    if data is None:
         _die(f"Classifier did not return valid JSON.\nRaw output:\n{text}")
-
-    try:
-        data = json.loads(cleaned[brace_start : brace_end + 1])
-    except json.JSONDecodeError as exc:
-        _die(f"Failed to parse classifier JSON: {exc}\nRaw output:\n{text}")
 
     return TriageResult(
         triage_type=data["type"],
