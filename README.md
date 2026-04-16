@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="icon.png" alt="totomisu" width="200">
+  <img src="icon.png" alt="totomisu" width="400">
 </p>
 
 # totomisu
