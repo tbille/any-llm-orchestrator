@@ -12,12 +12,8 @@ wheels/
 # Cloned repositories (managed by the tool)
 repos/
 
-# Worktrees inside specs are managed by the tool
-specs/*/repos/
-specs/*/logs/
-
-# Status lock files
-specs/*/.status.lock
+# Per-feature specs (generated at runtime)
+specs/
 
 # Archived specs
 @specs/
