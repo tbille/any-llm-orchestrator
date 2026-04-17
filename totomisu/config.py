@@ -34,6 +34,13 @@ class RepoInfo:
     the language-specific list of test files / packages / modules
     identified from ``git diff``.  When empty, the build-check step
     falls back to *test_command*."""
+    pragma_validators: tuple[str, ...] = ()
+    """agent-pragma validators to enforce for this repo.  Empty means
+    pragma validation is skipped.  Typical values: ``security``,
+    ``state-machine``, ``error-handling`` plus one language-specific
+    validator (``python-style``, ``go-effective``, ``go-proverbs``,
+    ``typescript-style``).  Rust repos only get the universal trio
+    because agent-pragma has no Rust-specific validator."""
 
     @property
     def github_slug(self) -> str:
@@ -69,6 +76,12 @@ REPOS: tuple[RepoInfo, ...] = (
         ),
         test_command="uv run pytest tests/unit -x -q --timeout=60",
         targeted_test_command="uv run pytest {targets} -x -q --timeout=60",
+        pragma_validators=(
+            "security",
+            "state-machine",
+            "error-handling",
+            "python-style",
+        ),
     ),
     RepoInfo(
         name="gateway",
@@ -87,6 +100,12 @@ REPOS: tuple[RepoInfo, ...] = (
         ),
         test_command="uv run pytest -x -q --timeout=60",
         targeted_test_command="uv run pytest {targets} -x -q --timeout=60",
+        pragma_validators=(
+            "security",
+            "state-machine",
+            "error-handling",
+            "python-style",
+        ),
     ),
     RepoInfo(
         name="any-llm-rust",
@@ -102,6 +121,8 @@ REPOS: tuple[RepoInfo, ...] = (
         ),
         test_command="cargo test --all-features",
         targeted_test_command="cargo test {targets} --all-features",
+        # agent-pragma has no Rust validator -- universal trio only.
+        pragma_validators=("security", "state-machine", "error-handling"),
     ),
     RepoInfo(
         name="any-llm-go",
@@ -117,6 +138,13 @@ REPOS: tuple[RepoInfo, ...] = (
         ),
         test_command="go test ./... -race -count=1",
         targeted_test_command="go test {targets} -race -count=1",
+        pragma_validators=(
+            "security",
+            "state-machine",
+            "error-handling",
+            "go-effective",
+            "go-proverbs",
+        ),
     ),
     RepoInfo(
         name="any-llm-ts",
@@ -133,6 +161,12 @@ REPOS: tuple[RepoInfo, ...] = (
         ),
         test_command="npm test",
         targeted_test_command="npx vitest run {targets}",
+        pragma_validators=(
+            "security",
+            "state-machine",
+            "error-handling",
+            "typescript-style",
+        ),
     ),
     RepoInfo(
         name="any-llm-platform",
@@ -152,6 +186,12 @@ REPOS: tuple[RepoInfo, ...] = (
         ),
         test_command="uv run pytest -x -q --timeout=60",
         targeted_test_command="uv run pytest {targets} -x -q --timeout=60",
+        pragma_validators=(
+            "security",
+            "state-machine",
+            "error-handling",
+            "python-style",
+        ),
     ),
 )
 
@@ -220,6 +260,30 @@ CLASSIFIER_TIMEOUT: int = _env_int("ORCHESTRATOR_CLASSIFIER_TIMEOUT", 120)
 
 BUILD_PHASE_TIMEOUT: int = _env_int("ORCHESTRATOR_BUILD_PHASE_TIMEOUT", 5400)
 """Seconds before the build phase tmux wait times out (default 90 min)."""
+
+
+# ── agent-pragma integration ─────────────────────────────────────────
+#
+# agent-pragma (https://github.com/peteski22/agent-pragma) provides
+# deterministic validators that run as opencode skills/commands.  We
+# install it per-workspace during ``totomisu init`` and then invoke
+# ``/validate`` between the engineer and review steps so HARD
+# violations feed back into the existing fix-loop.
+
+PRAGMA_REPO_URL: str = "https://github.com/peteski22/agent-pragma.git"
+"""Upstream agent-pragma repo.  Cloned shallowly into the workspace."""
+
+PRAGMA_DEFAULT_VERSION: str = "3.2.3"
+"""Pinned release tag.  Bump intentionally to track new validators."""
+
+PRAGMA_VERSION: str = os.environ.get("PRAGMA_VERSION", PRAGMA_DEFAULT_VERSION)
+"""Effective pragma tag.  Override via ``PRAGMA_VERSION`` env var."""
+
+PRAGMA_ENABLED: bool = os.environ.get("PRAGMA_ENABLED", "1") != "0"
+"""Toggle pragma validation off by exporting ``PRAGMA_ENABLED=0``."""
+
+PRAGMA_VALIDATE_TIMEOUT: int = _env_int("PRAGMA_VALIDATE_TIMEOUT", 300)
+"""Seconds before a ``/validate`` run is considered timed out."""
 
 
 # ── Caveman prompt (token-saving mode for headless agents) ────────────
@@ -297,6 +361,11 @@ class ProjectPaths:
     @property
     def agents_dir(self) -> Path:
         return self.root / ".opencode" / "agents"
+
+    @property
+    def pragma_dir(self) -> Path:
+        """Workspace-local checkout of agent-pragma."""
+        return self.root / ".agent-pragma"
 
     def repo_path(self, repo_name: str) -> Path:
         return self.repos_dir / repo_name

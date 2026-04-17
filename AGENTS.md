@@ -5,7 +5,8 @@ Multi-repo orchestrator for the any-llm ecosystem. Coordinates feature work acro
 ## System requirements
 
 All must be on PATH: `opencode`, `gh` (authenticated), `git`, `tmux`.
-Optional: `uv` (used by individual repo test commands), `wt` (worktrunk) — falls back to `git worktree add`.
+Optional: `uv` (used by individual repo test commands), `wt` (worktrunk) — falls back to `git worktree add`, `make` (used by `totomisu init` to install agent-pragma).
+agent-pragma's linters (`ruff`, `mypy`/`ty`, `biome`, `tsc`, `golangci-lint`) are invoked by the engineer agent via per-repo runners (`uv run`, `npx`, or whatever each ecosystem repo already uses). No global install is required as long as each repo's normal dev toolchain is set up.
 
 Python 3.12 (pinned in `.python-version`). macOS/Linux only — uses `fcntl.flock()`.
 
@@ -21,6 +22,8 @@ This installs the `totomisu` command on PATH.
 
 ```sh
 totomisu init                                         # set up workspace (clones repos, creates dirs)
+totomisu update                                       # refresh pragma + bundled agents + opencode.json
+totomisu update --dry-run                             # preview what would change
 totomisu run --issue <github-issue-url>
 totomisu run --prompt "description"
 totomisu run --prompt "description" --headless        # no TUI interaction for any phase
@@ -35,12 +38,12 @@ There are no build, test, lint, format, or typecheck commands for this repo itse
 
 ## Architecture
 
-- `totomisu/cli.py` — CLI entry point with subcommands: `init`, `run`, `dashboard`, `_repo-runner` (hidden, for tmux panes). The `init` command sets up a workspace directory with repos, specs, and agent definitions. The `run` command orchestrates the pipeline. Workspace resolution: `$TOTOMISU_WORKSPACE` env → walk up from cwd for `.totomisu` marker → `~/.config/totomisu/config.json`.
+- `totomisu/cli.py` — CLI entry point with subcommands: `init`, `update`, `run`, `dashboard`, `_repo-runner` (hidden, for tmux panes). The `init` command sets up a workspace directory with repos, specs, and agent definitions. The `update` command re-runs the in-place install steps (agent-pragma, bundled agent files, `opencode.json`) without re-cloning repos; preserves user-modified agent files and exits non-zero on failure. The `run` command orchestrates the pipeline. Workspace resolution: `$TOTOMISU_WORKSPACE` env → walk up from cwd for `.totomisu` marker → `~/.config/totomisu/config.json`.
 - `totomisu/dashboard_server.py` — Standalone HTTP server. Frontend assets bundled in `totomisu/data/dashboard/`.
 - `totomisu/config.py` — Repo registry, env-var tunables, path helpers. Source of truth for repo metadata. Each `RepoInfo` now includes `test_command` for pre-review build checks. `get_project_paths()` resolves the workspace root. `get_package_data_path()` locates bundled assets.
 - `totomisu/intake.py` — Fetches issues via `gh`, classifies via opencode headless mode. The classifier returns a `phases` list (subset of pm, debate, designer, architect) that controls which spec agents run. Parses opencode's `--format json` output as newline-delimited JSON events.
 - `totomisu/parse.py` — Structured output parsing for agent responses. Extracts JSON blocks, review verdicts, and cross-review repo lists. Replaces ad-hoc string matching.
-- `totomisu/workspace.py` — Clones repos to `repos/`, creates worktrees under `specs/<slug>/repos/`. Injects `AGENTS.md` into each worktree before the build phase.
+- `totomisu/workspace.py` — Clones repos to `repos/`, creates worktrees under `specs/<slug>/repos/`. Before the build phase, enriches each per-repo spec file (`specs/<slug>/<repo>-spec.md`) in place with a scoping warning, scope notes, and test hints. Nothing is written into the worktree itself: `AGENTS.md` and `CLAUDE.md` are reserved names that opencode auto-loads as project rules, so injecting orchestrator content there would pollute PRs and clash with upstream rule files. Agents receive context via `-f` attachments of the enriched spec.
 - `totomisu/engineer.py` — Launches per-repo pipelines as tmux panes. Each pane runs `totomisu _repo-runner <slug> <repo>`. Build phase has a configurable timeout.
 - `totomisu/repo_runner.py` — Per-repo pipeline module. Runs in tmux panes via the hidden `_repo-runner` CLI subcommand. Includes pre-review build check and simple bug investigation steps.
 - `totomisu/status.py` — Concurrent-safe status tracking via `fcntl.flock()` and atomic write-then-rename to `status.json`.
@@ -53,6 +56,8 @@ After `totomisu init`, the workspace contains:
 - `repos/` — Cloned upstream repos
 - `specs/<slug>/` — Per-feature workspace: specs, reviews, status.json, costs.json, `repos/` (worktrees), `logs/`
 - `.opencode/agents/` — Six agent definitions (copied from package data during init)
+- `.opencode/commands/` + `.opencode/skills/` — agent-pragma commands and skills (populated by `make install AGENT=opencode` during init)
+- `.agent-pragma/` — Pinned checkout of `peteski22/agent-pragma` (version from `PRAGMA_VERSION`, default `3.2.3`)
 - `.totomisu` — Workspace marker file (JSON with version and path)
 
 ## Key directories (package)
@@ -70,6 +75,7 @@ After `totomisu init`, the workspace contains:
 - **`any-llm` scope trap**: The `any-llm` repo contains gateway *client* code (in scope) but gateway *server* code lives in the `gateway` repo. Agents are explicitly warned not to add server code to `any-llm`.
 - **`any-llm-platform` uses `develop` branch**, not `main`. All other repos use `main`.
 - **CAVEMAN_PROMPT** in `totomisu/config.py` is applied to headless agent calls for token savings. It includes the instruction to never create AGENTS.md files unless asked.
+- **agent-pragma enforcement**: `totomisu init` clones `peteski22/agent-pragma` (pinned tag, per-workspace) and runs `make install AGENT=opencode PROJECT=<workspace>`. The per-repo pipeline runs `/validate` between build-check and review (`step_pragma_validate` in `repo_runner.py`). HARD violations feed back into the engineer fix-loop using the same mechanism as build failures; a `<repo>-pragma-violations.md` file is attached on the next fix round. The full `/validate` report is persisted at `specs/<slug>/<repo>-pragma-report.md` for debugging. Each `RepoInfo` has a `pragma_validators` tuple that picks which validators run (language-specific + universal). `any-llm-rust` gets only universal validators because agent-pragma has no Rust-specific validator.
 
 ## Environment variables
 
@@ -82,6 +88,9 @@ After `totomisu init`, the workspace contains:
 | `ORCHESTRATOR_CLASSIFIER_TIMEOUT` | 120 | Headless classifier timeout (seconds) |
 | `ORCHESTRATOR_COST_CEILING` | 200.0 | USD cost ceiling before pipeline pauses |
 | `ORCHESTRATOR_BUILD_PHASE_TIMEOUT` | 5400 | Build phase tmux wait timeout (seconds, default 90 min) |
+| `PRAGMA_ENABLED` | `1` | Set to `0` to disable the pragma `/validate` step |
+| `PRAGMA_VERSION` | `3.2.3` | agent-pragma git tag checked out during `totomisu init` |
+| `PRAGMA_VALIDATE_TIMEOUT` | 300 | Seconds before `/validate` is considered timed out (non-blocking) |
 
 ## Code conventions
 

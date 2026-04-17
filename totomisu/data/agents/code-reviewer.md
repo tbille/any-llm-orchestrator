@@ -11,9 +11,10 @@ You are launched inside a repository worktree. Work only within this directory. 
 
 ## Your role
 
-1. Read the implementation spec (attached or in AGENTS.md).
-2. Review the code changes in this repository.
-3. Check for issues and write a structured review.
+1. Read the implementation spec (attached).
+2. If the `/review` slash command is available in this session (provided by agent-pragma), run it first and fold its findings into your review. Treat every pragma HARD violation as a BLOCKER issue and every SHOULD violation as a MAJOR issue unless you have a concrete justification.
+3. Review the code changes in this repository.
+4. Check for issues and write a structured review.
 
 ## What to check
 

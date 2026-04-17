@@ -16,9 +16,12 @@ import json
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from totomisu.config import (
+    PRAGMA_REPO_URL,
+    PRAGMA_VERSION,
     REPOS,
     WORKSPACE_MARKER,
     get_package_data_path,
@@ -159,6 +162,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ── update ────────────────────────────────────────────────────
+    update_parser = subparsers.add_parser(
+        "update",
+        help=(
+            "Update workspace-scoped assets (agent-pragma, bundled agent "
+            "files, opencode.json) without re-running `totomisu init`."
+        ),
+    )
+    update_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Print what would change without modifying any files.",
+    )
+
     # ── dashboard ─────────────────────────────────────────────────
     dash_parser = subparsers.add_parser(
         "dashboard",
@@ -220,6 +238,117 @@ def _check_system_deps() -> list[str]:
     return missing
 
 
+_STOCK_OPENCODE_JSON: dict = {"$schema": "https://opencode.ai/config.json"}
+"""Default contents of the workspace ``opencode.json`` file.
+
+Shared between ``cmd_init`` (writes it on first setup) and
+``_refresh_opencode_json`` (refuses to touch a user-modified copy).
+Bump this when we intentionally change the stock config.
+"""
+
+
+def _stock_opencode_json_text() -> str:
+    """Return the canonical serialised form written to ``opencode.json``."""
+    return json.dumps(_STOCK_OPENCODE_JSON, indent=2) + "\n"
+
+
+def _install_agent_pragma(ws_dir: Path, version: str) -> bool:
+    """Clone agent-pragma into the workspace and install into ``.opencode/``.
+
+    Per-workspace install keeps pragma's skills/commands scoped to this
+    totomisu workspace without touching the user's global opencode
+    config.  Idempotent: reuses an existing clone at the pinned tag and
+    re-runs ``make install`` every call so broken symlinks are repaired.
+
+    Returns ``True`` on success (including the "already at <version>"
+    path) and ``False`` on any failure.  The ``init`` caller discards
+    the result to preserve its warn-and-continue behaviour; ``update``
+    uses it to set the process exit code.
+    """
+    pragma_dir = ws_dir / ".agent-pragma"
+
+    # Check for git/make before starting.
+    if shutil.which("git") is None:
+        print("  [WARN] git not found on PATH; skipping agent-pragma install.")
+        return False
+    if shutil.which("make") is None:
+        print("  [WARN] make not found on PATH; skipping agent-pragma install.")
+        return False
+
+    # Clone (or update) the pragma checkout at the pinned tag.
+    if not pragma_dir.exists():
+        print(f"  Cloning agent-pragma {version}...")
+        clone = subprocess.run(
+            [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "--branch",
+                version,
+                PRAGMA_REPO_URL,
+                str(pragma_dir),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if clone.returncode != 0:
+            print(f"  [WARN] agent-pragma clone failed: {clone.stderr.strip()[:300]}")
+            return False
+    else:
+        # Existing checkout -- verify the tag and fetch if needed.
+        current = subprocess.run(
+            ["git", "describe", "--tags", "--exact-match"],
+            cwd=str(pragma_dir),
+            capture_output=True,
+            text=True,
+        )
+        if current.returncode != 0 or current.stdout.strip() != version:
+            print(f"  Updating agent-pragma to {version}...")
+            subprocess.run(
+                ["git", "fetch", "--tags", "--depth", "1", "origin", version],
+                cwd=str(pragma_dir),
+                capture_output=True,
+            )
+            checkout = subprocess.run(
+                ["git", "checkout", version],
+                cwd=str(pragma_dir),
+                capture_output=True,
+                text=True,
+            )
+            if checkout.returncode != 0:
+                print(
+                    f"  [WARN] agent-pragma checkout {version} failed: "
+                    f"{checkout.stderr.strip()[:300]}"
+                )
+                return False
+        else:
+            print(f"  agent-pragma already at {version}")
+
+    # Run `make install AGENT=opencode PROJECT=<ws>` from the pragma dir.
+    print("  Installing agent-pragma into workspace .opencode/...")
+    install = subprocess.run(
+        ["make", "install", "AGENT=opencode", f"PROJECT={ws_dir}"],
+        cwd=str(pragma_dir),
+        capture_output=True,
+        text=True,
+    )
+    if install.returncode != 0:
+        print(
+            f"  [WARN] agent-pragma install failed: "
+            f"{install.stderr.strip()[:400] or install.stdout.strip()[:400]}"
+        )
+        return False
+
+    print("  agent-pragma installed.")
+    # Note: pragma's language-specific linters (ruff/mypy/biome/tsc/
+    # golangci-lint) are invoked by the engineer agent using repo
+    # runners (`uv run`, `npx`, etc.), not from the global PATH.  We
+    # deliberately do NOT check global PATH here -- it produced
+    # false-negative warnings for setups that install linters per-repo.
+    return True
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     """Initialise a totomisu workspace.
 
@@ -261,12 +390,14 @@ def cmd_init(args: argparse.Namespace) -> None:
         shutil.copy2(md_file, agents_dst / md_file.name)
         print(f"  Copied agent: {md_file.name}")
 
+    # Install agent-pragma (skills/commands for deterministic validators).
+    # Per-workspace install so the user's global opencode config is untouched.
+    _install_agent_pragma(ws_dir, PRAGMA_VERSION)
+
     # Write opencode.json.
     opencode_cfg = ws_dir / "opencode.json"
     if not opencode_cfg.exists():
-        opencode_cfg.write_text(
-            json.dumps({"$schema": "https://opencode.ai/config.json"}, indent=2) + "\n"
-        )
+        opencode_cfg.write_text(_stock_opencode_json_text())
         print("  Created opencode.json")
 
     # Write workspace marker.
@@ -314,6 +445,209 @@ def cmd_init(args: argparse.Namespace) -> None:
     print(f'    totomisu run --prompt "description"')
     print(f"    totomisu dashboard")
     print(f"{'=' * 56}\n")
+
+
+# ── Update command ───────────────────────────────────────────────────
+#
+# ``totomisu update`` keeps a workspace in sync with whatever the
+# currently-installed totomisu package ships: agent-pragma, bundled
+# agent files, and ``opencode.json``.  It never touches cloned repos
+# under ``repos/``, nor specs, nor user-modified files.
+
+
+@dataclass
+class _UpdateSummary:
+    """Tallies the outcome of a ``totomisu update`` run."""
+
+    pragma_ok: bool = False
+    agents_installed: int = 0
+    agents_updated: int = 0
+    agents_unchanged: int = 0
+    agents_user_modified: int = 0
+    opencode_json: str = "unchanged"  # unchanged | updated | user-modified | error
+
+    @property
+    def ok(self) -> bool:
+        return self.pragma_ok and self.opencode_json != "error"
+
+
+def _refresh_bundled_agents(ws_dir: Path, dry_run: bool) -> _UpdateSummary:
+    """Re-copy bundled agent definitions into ``<ws>/.opencode/agents/``.
+
+    Conflict handling: when the workspace copy differs from the package
+    version currently on disk, we assume the user edited it locally and
+    leave it alone (printing ``skipped (user-modified)``).  The only
+    way to overwrite a user-modified file is to delete it first and
+    re-run ``update``.
+    """
+    summary = _UpdateSummary()
+    pkg_data = get_package_data_path()
+    agents_src = pkg_data / "agents"
+    agents_dst = ws_dir / ".opencode" / "agents"
+
+    if not agents_src.exists():
+        print("  [WARN] bundled agent directory missing from package data.")
+        return summary
+
+    if not dry_run:
+        agents_dst.mkdir(parents=True, exist_ok=True)
+
+    for src_file in sorted(agents_src.glob("*.md")):
+        dst_file = agents_dst / src_file.name
+        src_bytes = src_file.read_bytes()
+
+        if not dst_file.exists():
+            if not dry_run:
+                dst_file.write_bytes(src_bytes)
+            print(f"  installed {src_file.name}")
+            summary.agents_installed += 1
+            continue
+
+        dst_bytes = dst_file.read_bytes()
+        if dst_bytes == src_bytes:
+            summary.agents_unchanged += 1
+            continue
+
+        # Workspace copy differs from the shipped one.  We cannot tell
+        # whether the delta is from a previous totomisu version or a
+        # hand-edit, so the safe default is to preserve local content.
+        print(f"  skipped {src_file.name} (user-modified)")
+        summary.agents_user_modified += 1
+
+    return summary
+
+
+def _refresh_opencode_json(ws_dir: Path, dry_run: bool) -> str:
+    """Rewrite ``opencode.json`` only when it matches the stock default.
+
+    Returns one of ``"unchanged"``, ``"updated"``, ``"user-modified"``,
+    ``"error"``.
+    """
+    opencode_cfg = ws_dir / "opencode.json"
+    stock_text = _stock_opencode_json_text()
+
+    if not opencode_cfg.exists():
+        if not dry_run:
+            try:
+                opencode_cfg.write_text(stock_text)
+            except OSError as exc:
+                print(f"  [WARN] could not write opencode.json: {exc}")
+                return "error"
+        print("  installed opencode.json")
+        return "updated"
+
+    try:
+        current = opencode_cfg.read_text()
+    except OSError as exc:
+        print(f"  [WARN] could not read opencode.json: {exc}")
+        return "error"
+
+    if current == stock_text:
+        return "unchanged"
+
+    # Try to detect a semantic match even if whitespace drifted.
+    try:
+        current_data = json.loads(current)
+    except json.JSONDecodeError:
+        print("  skipped opencode.json (user-modified, invalid JSON)")
+        return "user-modified"
+
+    if current_data == _STOCK_OPENCODE_JSON:
+        # Same content, different formatting -- rewrite to canonical form.
+        if not dry_run:
+            try:
+                opencode_cfg.write_text(stock_text)
+            except OSError as exc:
+                print(f"  [WARN] could not write opencode.json: {exc}")
+                return "error"
+        print("  updated opencode.json (reformatted)")
+        return "updated"
+
+    print("  skipped opencode.json (user-modified)")
+    return "user-modified"
+
+
+def cmd_update(args: argparse.Namespace) -> None:
+    """Update workspace-scoped totomisu assets in place.
+
+    Refreshes agent-pragma, bundled agent definitions, and the stock
+    ``opencode.json`` without re-running ``totomisu init``.  Leaves
+    ``repos/``, ``specs/``, the global config, and any user-edited
+    files alone.  Exits non-zero on any failure so shell scripts can
+    detect problems.
+    """
+    print("\n── totomisu update ─────────────────────────────────\n")
+
+    paths = get_project_paths()
+    ws_dir = paths.root
+    dry_run = bool(getattr(args, "dry_run", False))
+
+    if dry_run:
+        print("  (dry-run: no files will be modified)\n")
+
+    # Precheck required tools for pragma install.  ``opencode`` itself
+    # is not needed by ``update`` (it only copies files and runs
+    # ``make install``), so we just warn and continue when it is
+    # missing rather than bailing.
+    missing = [t for t in ("git", "make") if shutil.which(t) is None]
+    if missing:
+        print(
+            f"  [ERROR] missing required tools: {', '.join(missing)}.\n"
+            f"  Install them before running `totomisu update`."
+        )
+        sys.exit(1)
+
+    summary = _UpdateSummary()
+
+    print(f"  Workspace: {ws_dir}\n")
+
+    # 1. agent-pragma.
+    print("  agent-pragma:")
+    if dry_run:
+        pragma_dir = ws_dir / ".agent-pragma"
+        if pragma_dir.exists():
+            current = subprocess.run(
+                ["git", "describe", "--tags", "--exact-match"],
+                cwd=str(pragma_dir),
+                capture_output=True,
+                text=True,
+            )
+            tag = current.stdout.strip() if current.returncode == 0 else "unknown"
+            print(f"    would reconcile {tag} -> {PRAGMA_VERSION}")
+        else:
+            print(f"    would clone agent-pragma {PRAGMA_VERSION}")
+        summary.pragma_ok = True
+    else:
+        summary.pragma_ok = _install_agent_pragma(ws_dir, PRAGMA_VERSION)
+    print()
+
+    # 2. Bundled agent files.
+    print("  bundled agents:")
+    agent_summary = _refresh_bundled_agents(ws_dir, dry_run=dry_run)
+    summary.agents_installed = agent_summary.agents_installed
+    summary.agents_updated = agent_summary.agents_updated
+    summary.agents_unchanged = agent_summary.agents_unchanged
+    summary.agents_user_modified = agent_summary.agents_user_modified
+    print()
+
+    # 3. opencode.json.
+    print("  opencode.json:")
+    summary.opencode_json = _refresh_opencode_json(ws_dir, dry_run=dry_run)
+    print()
+
+    # Summary line.
+    print(f"{'=' * 56}")
+    print(
+        f"  Summary: pragma={'ok' if summary.pragma_ok else 'FAIL'}, "
+        f"agents installed={summary.agents_installed} "
+        f"unchanged={summary.agents_unchanged} "
+        f"user-modified={summary.agents_user_modified}, "
+        f"opencode.json={summary.opencode_json}"
+    )
+    print(f"{'=' * 56}\n")
+
+    if not summary.ok:
+        sys.exit(1)
 
 
 # ── Phase runners ─────────────────────────────────────────────────────
@@ -690,12 +1024,14 @@ def cmd_run(args: argparse.Namespace) -> None:
         save_costs(slug, paths)
         return
 
-    # Set up engineer context (AGENTS.md in each worktree).
+    # Enrich per-repo specs with scope notes and scoping warning.  The spec
+    # file is what every agent call attaches via -f, so this is how we get
+    # context to agents -- we never write files into the worktree itself,
+    # because AGENTS.md and CLAUDE.md are reserved names in opencode.
     if not _should_skip("build", skip_to):
-        print("  Setting up engineer context (AGENTS.md)...")
+        print("  Enriching per-repo specs...")
         for name in repo_names:
-            if paths.worktree_path(slug, name).exists():
-                setup_engineer_context(slug, name, paths)
+            setup_engineer_context(slug, name, paths)
 
     # Build: per-repo parallel pipelines.
     if not _should_skip("build", skip_to):
@@ -791,6 +1127,8 @@ def main() -> None:
 
     if args.command == "init":
         cmd_init(args)
+    elif args.command == "update":
+        cmd_update(args)
     elif args.command == "run":
         cmd_run(args)
     elif args.command == "dashboard":

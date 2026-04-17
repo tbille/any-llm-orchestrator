@@ -19,12 +19,19 @@ from totomisu.config import (
     CI_POLL_INTERVAL,
     MAX_CI_FIX_ROUNDS,
     MAX_REVIEW_ROUNDS,
+    PRAGMA_ENABLED,
+    PRAGMA_VALIDATE_TIMEOUT,
     REPO_BY_NAME,
     RepoInfo,
     ProjectPaths,
     get_project_paths,
 )
-from totomisu.parse import ReviewVerdict, parse_review_verdict
+from totomisu.parse import (
+    PragmaReport,
+    ReviewVerdict,
+    parse_pragma_report,
+    parse_review_verdict,
+)
 from totomisu.status import update_repo_step
 
 
@@ -166,6 +173,11 @@ def step_engineer(
         build_failure_file = paths.spec_file(slug, f"{repo_name}-build-failures.md")
         if build_failure_file.exists():
             file_args += ["-f", str(build_failure_file)]
+        pragma_violations_file = paths.spec_file(
+            slug, f"{repo_name}-pragma-violations.md"
+        )
+        if pragma_violations_file.exists():
+            file_args += ["-f", str(pragma_violations_file)]
 
     scope_note = ""
     if repo_info and repo_info.scope_notes:
@@ -192,18 +204,30 @@ def step_engineer(
             f"Fix the issues found in the attached file(s). This is a {lang} project. "
             f"If a review file is attached, address the review feedback. "
             f"If a build-failures file is attached, fix the failing tests. "
+            f"If a pragma-violations file is attached, fix every HARD "
+            f"violation it lists -- those block the pipeline. "
             f"NEVER run the full test suite. Only run the specific test files "
             f"related to the files you changed. The full suite runs in CI."
             f"{scope_note}{commit_instructions}{repo_scope}"
         )
     else:
+        pragma_note = ""
+        if repo_info and repo_info.pragma_validators:
+            pragma_note = (
+                " ENFORCEMENT: This repo is guarded by agent-pragma. "
+                "After you finish, `/validate` will run and any HARD "
+                "violation blocks the pipeline. Follow idiomatic "
+                f"{lang} patterns: proper error handling, no secrets in "
+                "code, doc-comments on exported APIs, no swallowed "
+                "exceptions."
+            )
         message = (
             f"Implement the feature described in the attached spec for this "
             f"{lang} project. Follow the repository's existing patterns and "
             f"conventions. Write tests for your changes. "
             f"NEVER run the full test suite. Only run the specific test files "
             f"related to the files you changed. The full suite runs in CI."
-            f"{scope_note}{commit_instructions}{repo_scope}"
+            f"{scope_note}{commit_instructions}{pragma_note}{repo_scope}"
         )
 
     # Simple-bug path: no spec file, use input and investigation note.
@@ -566,6 +590,160 @@ def step_build_check(
     return False
 
 
+# ── Step: agent-pragma /validate ──────────────────────────────────────
+
+
+def _pragma_installed(paths: ProjectPaths) -> bool:
+    """Return True when agent-pragma appears to be installed in the workspace.
+
+    Checks for ``.agent-pragma/`` (the pinned checkout) and at least one
+    command file under ``.opencode/commands/``.  Missing either means
+    ``totomisu init`` did not complete the pragma step (e.g. ``make``
+    was absent) -- we skip validation silently rather than failing.
+    """
+    pragma_checkout = paths.pragma_dir
+    commands_dir = paths.root / ".opencode" / "commands"
+    if not pragma_checkout.exists():
+        return False
+    if not commands_dir.exists() or not any(commands_dir.glob("*.md")):
+        return False
+    return True
+
+
+def step_pragma_validate(
+    slug: str,
+    repo_name: str,
+    paths: ProjectPaths,
+) -> bool:
+    """Run agent-pragma's ``/validate`` command and record HARD violations.
+
+    Returns True when validation passes (or is skipped); False when HARD
+    violations were found and the engineer should run a fix round.
+
+    Non-fatal on any internal error: a broken pragma install must never
+    block the pipeline.  In that case we log and return True so the
+    existing review step continues normally.
+    """
+    if not PRAGMA_ENABLED:
+        return True
+
+    repo_info = REPO_BY_NAME.get(repo_name)
+    if not repo_info or not repo_info.pragma_validators:
+        return True
+
+    if not _pragma_installed(paths):
+        print(
+            f"  [{repo_name}] agent-pragma not installed in workspace; "
+            f"skipping /validate."
+        )
+        return True
+
+    wt_path = paths.worktree_path(slug, repo_name)
+    log_file = paths.logs_dir(slug) / f"{repo_name}-pragma.log"
+    report_file = paths.spec_file(slug, f"{repo_name}-pragma-report.md")
+
+    validators_hint = ", ".join(repo_info.pragma_validators)
+    print(f"  [{repo_name}] Running /validate ({validators_hint})...")
+
+    # opencode run --dir <workspace> executes the /validate command.
+    # We pass a one-line prompt asking opencode to run the command and
+    # print its markdown report verbatim so the parser can extract the
+    # table + verdict.
+    cmd = [
+        "opencode",
+        "run",
+        "--dir",
+        str(wt_path),
+        "--dangerously-skip-permissions",
+        "--",
+        "Run the /validate slash command and return its full markdown "
+        "report verbatim. Do not add commentary.",
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=PRAGMA_VALIDATE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            f"  [{repo_name}] /validate timed out after "
+            f"{PRAGMA_VALIDATE_TIMEOUT}s -- skipping (non-blocking).",
+            file=sys.stderr,
+        )
+        log_file.write_text("TIMEOUT\n", encoding="utf-8")
+        return True
+
+    combined = result.stdout + "\n" + result.stderr
+    log_file.write_text(combined, encoding="utf-8")
+
+    if result.returncode != 0:
+        print(
+            f"  [{repo_name}] /validate exit={result.returncode}; "
+            f"treating as non-blocking."
+        )
+        return True
+
+    report = parse_pragma_report(combined)
+    _write_pragma_report_file(report_file, repo_name, repo_info, report)
+
+    print(
+        f"  [{repo_name}] pragma: verdict={report.verdict} "
+        f"HARD={report.hard} SHOULD={report.should} WARN={report.warn}"
+    )
+
+    if not report.blocked:
+        return True
+
+    # Write the engineer-facing violations file (fed into the fix round).
+    violations_file = paths.spec_file(slug, f"{repo_name}-pragma-violations.md")
+    violations_file.write_text(
+        _format_violations_for_engineer(repo_name, report),
+        encoding="utf-8",
+    )
+    return False
+
+
+def _write_pragma_report_file(
+    report_file: Path,
+    repo_name: str,
+    repo_info: RepoInfo,
+    report: PragmaReport,
+) -> None:
+    """Persist the parsed pragma report for debugging and resumability."""
+    lines = [
+        f"# agent-pragma report: {repo_name}",
+        "",
+        f"**Validators:** {', '.join(repo_info.pragma_validators)}",
+        f"**Verdict:** {report.verdict}",
+        f"**HARD:** {report.hard}  **SHOULD:** {report.should}  "
+        f"**WARN:** {report.warn}",
+        "",
+    ]
+    if report.violations_md:
+        lines.append(report.violations_md)
+        lines.append("")
+    report_file.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _format_violations_for_engineer(
+    repo_name: str,
+    report: PragmaReport,
+) -> str:
+    """Format HARD violations as actionable engineer context."""
+    return (
+        f"# Pragma HARD Violations: {repo_name}\n\n"
+        f"The `/validate` command found {report.hard} HARD violation(s) "
+        f"that MUST be fixed before this change can proceed to review.\n\n"
+        f"{report.violations_md or '(no violation details captured)'}\n\n"
+        f"Fix each HARD violation above.  After fixing, the pipeline "
+        f"will re-run `/validate` automatically.  Do not silence "
+        f"validators -- address the underlying issue.\n"
+    )
+
+
 # ── Step: Review ──────────────────────────────────────────────────────
 
 
@@ -601,6 +779,15 @@ def step_review(
         '<!-- VERDICT: {"status": "PASS", "blockers": 0, "majors": 0, "minors": 0} -->'
     )
 
+    pragma_hint = ""
+    if repo_info and repo_info.pragma_validators and _pragma_installed(paths):
+        pragma_hint = (
+            " Start by running the `/review` slash command to get the "
+            "deterministic validator findings, then incorporate its output "
+            "into your write-up. Treat every pragma HARD violation as a "
+            "review BLOCKER."
+        )
+
     if is_followup and review_file.exists():
         # Attach the prior review so the reviewer knows what to verify.
         file_args += ["-f", str(review_file)]
@@ -617,7 +804,7 @@ def step_review(
             f"## Previously Flagged Issues (status of each: FIXED or STILL_OPEN) "
             f"## New Issues Found (if any) "
             f"## Recommendations (list improvements)"
-            f"{verdict_instruction}{repo_scope}"
+            f"{pragma_hint}{verdict_instruction}{repo_scope}"
         )
     else:
         message = (
@@ -630,7 +817,7 @@ def step_review(
             f"## Status: PASS or NEEDS_CHANGES "
             f"## Issues Found (list each issue) "
             f"## Recommendations (list improvements)"
-            f"{verdict_instruction}{repo_scope}"
+            f"{pragma_hint}{verdict_instruction}{repo_scope}"
         )
 
     prompt_file = paths.logs_dir(slug) / f"{repo_name}-review-prompt.md"
@@ -1679,6 +1866,20 @@ def run_repo_pipeline(
             print(f"  [{repo_name}] Tests failed, running engineer fix...")
             update_repo_step(slug, repo_name, "build-fix", paths)
             step_engineer(slug, repo_name, paths, is_fix_round=True)
+
+        # Deterministic validators (agent-pragma).  HARD violations
+        # trigger an engineer fix round on the same budget as the
+        # review loop so the fix-then-validate cycle stays bounded.
+        print(f"\n  [{repo_name}] -> pragma-validate")
+        update_repo_step(slug, repo_name, "pragma-validate", paths)
+        if not step_pragma_validate(slug, repo_name, paths):
+            print(
+                f"  [{repo_name}] Pragma HARD violations found, running engineer fix..."
+            )
+            update_repo_step(slug, repo_name, "pragma-fix", paths)
+            step_engineer(slug, repo_name, paths, is_fix_round=True)
+            # Re-validate once; still non-blocking for the review step.
+            step_pragma_validate(slug, repo_name, paths)
 
         print(f"\n  [{repo_name}] -> review (round {review_round + 1})")
         update_repo_step(slug, repo_name, f"review-{review_round + 1}", paths)

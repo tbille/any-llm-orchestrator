@@ -244,6 +244,112 @@ def parse_cross_review_repos(
     return [r for r in candidate_repos if r in affected]
 
 
+# ── agent-pragma /validate report parsing ────────────────────────────
+
+
+@dataclass(frozen=True)
+class PragmaReport:
+    """Parsed result of an agent-pragma ``/validate`` run.
+
+    Fields follow pragma's severity model:
+      - ``hard``: must-fix violations that block the pipeline.
+      - ``should``: fix-or-justify violations.
+      - ``warn``: advisory notes.
+      - ``verdict``: upstream verdict line ("PASS" / "FAIL" / "UNKNOWN").
+      - ``violations_md``: markdown snippet listing each HARD violation,
+        suitable for feeding back to the engineer agent.
+    """
+
+    hard: int
+    should: int
+    warn: int
+    verdict: str
+    violations_md: str
+
+    @property
+    def blocked(self) -> bool:
+        """True if any HARD violations must be fixed before proceeding."""
+        return self.hard > 0
+
+
+# Table-row regex: "| <validator> | <result> | <hard> | <should> | <warn> |"
+# Numbers may include ANSI colour codes or emoji; we strip those first.
+_PRAGMA_TABLE_ROW = re.compile(
+    r"^\|\s*([A-Za-z0-9_\-]+)\s*\|[^|]*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|",
+    re.MULTILINE,
+)
+
+# Verdict line: "**VERDICT** — FAIL ..." or "Verdict: FAIL".
+_PRAGMA_VERDICT = re.compile(
+    r"\b(?:verdict)\b[^A-Za-z]*\**\s*(PASS|FAIL)\b",
+    re.IGNORECASE,
+)
+
+
+def parse_pragma_report(text: str) -> PragmaReport:
+    """Parse the markdown output of agent-pragma's ``/validate`` command.
+
+    Pragma's report format (see its README) contains a results table and
+    a verdict line.  Numbers are summed across all validator rows; the
+    "HARD violations" section (if present) is extracted verbatim so the
+    engineer agent gets actionable context.
+
+    Falls back to a safe ``UNKNOWN``-verdict report when the output is
+    unrecognisable, which the caller treats as non-blocking.  This
+    prevents a malformed pragma response from stalling the pipeline.
+    """
+    # Strip ANSI escapes that opencode sometimes emits.
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+    hard = 0
+    should = 0
+    warn = 0
+    saw_table_row = False
+    for match in _PRAGMA_TABLE_ROW.finditer(clean):
+        # Skip the header row which has "HARD" as label-text, not a number.
+        try:
+            row_hard = int(match.group(2))
+            row_should = int(match.group(3))
+            row_warn = int(match.group(4))
+        except ValueError:
+            continue
+        hard += row_hard
+        should += row_should
+        warn += row_warn
+        saw_table_row = True
+
+    verdict_match = _PRAGMA_VERDICT.search(clean)
+    if verdict_match:
+        verdict = verdict_match.group(1).upper()
+    elif not saw_table_row:
+        verdict = "UNKNOWN"
+    else:
+        verdict = "FAIL" if hard > 0 else "PASS"
+
+    # Extract the HARD violations section verbatim.
+    violations_md = _extract_hard_section(clean)
+
+    return PragmaReport(
+        hard=hard,
+        should=should,
+        warn=warn,
+        verdict=verdict,
+        violations_md=violations_md,
+    )
+
+
+def _extract_hard_section(text: str) -> str:
+    """Return the ``## HARD violations`` section, or empty string."""
+    pattern = re.compile(
+        r"^##\s+HARD[^\n]*\n(.*?)(?=^##\s|\Z)",
+        re.IGNORECASE | re.MULTILINE | re.DOTALL,
+    )
+    match = pattern.search(text)
+    if match:
+        return match.group(0).strip()
+    return ""
+
+
 # ── Classifier response parsing ──────────────────────────────────────
 
 
