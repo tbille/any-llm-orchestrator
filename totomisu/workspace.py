@@ -76,6 +76,15 @@ def ensure_repos_cloned(paths: ProjectPaths) -> None:
                 check=True,
             )
 
+            # If the repo's default_branch differs from the remote HEAD
+            # (e.g. "develop" vs "main"), check it out now.
+            if repo.default_branch != "main":
+                subprocess.run(
+                    ["git", "checkout", repo.default_branch],
+                    cwd=str(dest),
+                    capture_output=True,
+                )
+
 
 # ── Worktrees ─────────────────────────────────────────────────────────
 
