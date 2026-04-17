@@ -40,9 +40,15 @@ from totomisu.prd import (
     prd_exists,
     run_debate,
     run_designer,
+    run_designer_headless,
     run_pm,
 )
-from totomisu.architect import get_affected_repos, run_architect, tech_spec_exists
+from totomisu.architect import (
+    get_affected_repos,
+    run_architect,
+    run_architect_headless,
+    tech_spec_exists,
+)
 from totomisu.workspace import (
     create_worktrees,
     ensure_repos_cloned,
@@ -147,9 +153,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "Run PM and debate phases headlessly (no TUI interaction). "
-            "The PRD is generated and critiqued in a single pass. "
-            "Architect still runs interactively unless combined with --skip-to."
+            "Run ALL agent phases headlessly (no TUI interaction). "
+            "PM, debate, designer, and architect each run as a single-pass "
+            "opencode call. No prompts, no TUI; suitable for unattended runs."
         ),
     )
 
@@ -448,9 +454,13 @@ def phase_specs(
             pass
         elif not design_exists(slug, paths):
             update_phase(slug, "designer", "running", paths)
-            run_designer(slug, paths)
+            if headless:
+                run_designer_headless(slug, paths)
+            else:
+                run_designer(slug, paths)
             update_phase(slug, "designer", "done", paths)
-            _confirm_continue("Designer", slug)
+            if not headless:
+                _confirm_continue("Designer", slug)
         else:
             print(f"  [skip] Design doc already exists: specs/{slug}/design.md")
             update_phase(slug, "designer", "done", paths)
@@ -462,9 +472,13 @@ def phase_specs(
             return get_affected_repos(slug, repo_names, paths)
         if not tech_spec_exists(slug, paths):
             update_phase(slug, "architect", "running", paths)
-            result = run_architect(slug, repo_names, paths, light=light)
+            if headless:
+                result = run_architect_headless(slug, repo_names, paths, light=light)
+            else:
+                result = run_architect(slug, repo_names, paths, light=light)
             update_phase(slug, "architect", "done", paths)
-            _confirm_continue("Architect", slug)
+            if not headless:
+                _confirm_continue("Architect", slug)
             return result
         print(f"  [skip] Tech spec already exists: specs/{slug}/tech-spec.md")
         update_phase(slug, "architect", "done", paths)

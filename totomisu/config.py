@@ -236,6 +236,47 @@ CAVEMAN_PROMPT = (
 )
 
 
+# ── Headless permission sandbox ───────────────────────────────────────
+#
+# Inline opencode config injected via ``OPENCODE_CONFIG_CONTENT`` for
+# every headless spec-phase agent call (PM, designer, architect).  It
+# confines the agent to its session working directory by denying any
+# ``external_directory`` access.
+#
+# Rationale: opencode's default permission ruleset sets
+# ``external_directory`` to ``"ask"``.  In headless mode (``opencode
+# run``) there is no UI to answer the prompt, so the session deadlocks
+# indefinitely on any tool call touching a path outside its cwd --
+# which is exactly what happens when an explore/research subagent
+# wanders into ``/Users/.../totomisu-workspace/repos/`` (the upstream
+# clones) instead of the worktrees inside ``specs/<slug>/repos/``.
+#
+# ``--dangerously-skip-permissions`` on the CLI does NOT cover
+# ``external_directory``; that gate is evaluated separately.  The
+# object-form ``{"*": "deny"}`` rule below catches every path outside
+# the session cwd while letting opencode's own built-in allow rules for
+# its tool-output cache and skills directories win by specificity.
+HEADLESS_SANDBOX_CONFIG_JSON: str = json.dumps(
+    {
+        "$schema": "https://opencode.ai/config.json",
+        "permission": {"external_directory": {"*": "deny"}},
+    }
+)
+
+
+def headless_env() -> dict[str, str]:
+    """Return ``os.environ`` copy with the sandbox config injected.
+
+    Use as ``env=headless_env()`` when calling ``subprocess.run`` to
+    spawn a headless ``opencode run`` for spec phases (PM, designer,
+    architect).  Ensures the child session cannot wander outside its
+    own working directory and hang on unanswerable permission prompts.
+    """
+    env = os.environ.copy()
+    env["OPENCODE_CONFIG_CONTENT"] = HEADLESS_SANDBOX_CONFIG_JSON
+    return env
+
+
 # ── Path helpers ──────────────────────────────────────────────────────
 
 

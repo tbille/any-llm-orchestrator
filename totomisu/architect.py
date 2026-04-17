@@ -7,27 +7,22 @@ import subprocess
 import sys
 from pathlib import Path
 
-from totomisu.config import REPO_BY_NAME, ProjectPaths
+from totomisu.config import CAVEMAN_PROMPT, REPO_BY_NAME, ProjectPaths, headless_env
 
 
-def run_architect(
+def _build_architect_prompt(
     slug: str,
     repo_names: list[str],
     paths: ProjectPaths,
     *,
-    light: bool = False,
-) -> list[str]:
-    """Launch the architect agent to produce technical specifications.
-
-    Args:
-        slug: Feature slug.
-        repo_names: Repos identified by triage as affected.
-        paths: Project paths.
-        light: If True, produce a lighter investigation-focused spec
-               (used for complex-bug path instead of full feature spec).
+    light: bool,
+) -> tuple[str, list[str]]:
+    """Build the architect prompt and the list of existing context files.
 
     Returns:
-        The final list of affected repo names (the architect may adjust it).
+        Tuple of (prompt, context_files). ``context_files`` is the list of
+        relative filenames (prd.md/design.md/input.md) that actually exist
+        in the spec directory; useful for logging.
     """
     spec_dir = paths.spec_dir(slug)
 
@@ -36,19 +31,6 @@ def run_architect(
     for name in ("prd.md", "design.md", "input.md"):
         if (spec_dir / name).exists():
             context_files.append(name)
-
-    mode_label = (
-        "lightweight investigation spec" if light else "full technical specification"
-    )
-
-    print(f"\n── Phase 4: Architect ({mode_label}) ────────────────")
-    print(f"  Working dir: {spec_dir}")
-    print(f"  Context:     {', '.join(context_files)}")
-    print(f"  Output:      tech-spec.md + per-repo specs")
-    print(f"  Repos:       {', '.join(repo_names)}")
-    print("  The architect agent will open in a TUI session.")
-    print("  Collaborate on the tech spec, then exit.")
-    print("────────────────────────────────────────────────────\n")
 
     repo_lines: list[str] = []
     for name in repo_names:
@@ -92,12 +74,16 @@ def run_architect(
 
     prompt = (
         f"You are the Technical Architect for this work.\n\n"
-        f"## Working directory\n"
-        f"ALL spec files you read or write are in the current directory.\n"
-        f"Do NOT access files outside this directory.\n\n"
+        f"## Working directory scope\n"
+        f"ALL files you read or write are in the CURRENT WORKING DIRECTORY.\n"
+        f"You MUST NOT access any path outside the current directory.  Do\n"
+        f"NOT use `../`, absolute paths, or parent-directory references.\n"
+        f"The ecosystem's upstream clones live elsewhere on disk and are\n"
+        f"OFF LIMITS; only the `repos/` inside the current dir is yours.\n\n"
         f"## Repository code\n"
         f"The source code for each affected repository is available as a\n"
-        f"worktree under `repos/` in the current directory. You can browse\n"
+        f"worktree at `repos/<repo-name>/` **inside the current directory**.\n"
+        f"Use relative paths only (e.g. `repos/any-llm/src/...`).  Browse\n"
         f"the code to understand existing APIs, types, and patterns:\n"
         f"{worktree_listing}\n\n"
         f"Use these to inform your specs -- check existing interfaces,\n"
@@ -121,6 +107,46 @@ def run_architect(
         f"so the orchestrator knows the final list."
     )
 
+    return prompt, context_files
+
+
+def run_architect(
+    slug: str,
+    repo_names: list[str],
+    paths: ProjectPaths,
+    *,
+    light: bool = False,
+) -> list[str]:
+    """Launch the architect agent to produce technical specifications.
+
+    Args:
+        slug: Feature slug.
+        repo_names: Repos identified by triage as affected.
+        paths: Project paths.
+        light: If True, produce a lighter investigation-focused spec
+               (used for complex-bug path instead of full feature spec).
+
+    Returns:
+        The final list of affected repo names (the architect may adjust it).
+    """
+    spec_dir = paths.spec_dir(slug)
+    mode_label = (
+        "lightweight investigation spec" if light else "full technical specification"
+    )
+
+    prompt, context_files = _build_architect_prompt(
+        slug, repo_names, paths, light=light
+    )
+
+    print(f"\n── Phase 4: Architect ({mode_label}) ────────────────")
+    print(f"  Working dir: {spec_dir}")
+    print(f"  Context:     {', '.join(context_files)}")
+    print(f"  Output:      tech-spec.md + per-repo specs")
+    print(f"  Repos:       {', '.join(repo_names)}")
+    print("  The architect agent will open in a TUI session.")
+    print("  Collaborate on the tech spec, then exit.")
+    print("────────────────────────────────────────────────────\n")
+
     subprocess.run(
         [
             "opencode",
@@ -134,6 +160,70 @@ def run_architect(
     )
 
     # Try to determine the final repo list from the tech spec.
+    return _extract_affected_repos(slug, repo_names, paths)
+
+
+def run_architect_headless(
+    slug: str,
+    repo_names: list[str],
+    paths: ProjectPaths,
+    *,
+    light: bool = False,
+) -> list[str]:
+    """Run the architect agent as a single headless pass.
+
+    Produces the same ``tech-spec.md`` + per-repo specs as the interactive
+    flow.  No user interaction required.
+    """
+    spec_dir = paths.spec_dir(slug)
+    tech_spec_file = paths.spec_file(slug, "tech-spec.md")
+    mode_label = (
+        "lightweight investigation spec" if light else "full technical specification"
+    )
+
+    prompt, context_files = _build_architect_prompt(
+        slug, repo_names, paths, light=light
+    )
+    prompt = CAVEMAN_PROMPT + prompt
+
+    print(f"\n── Phase 4: Architect headless ({mode_label}) ──────")
+    print(f"  Working dir: {spec_dir}")
+    print(f"  Context:     {', '.join(context_files)}")
+    print(f"  Output:      tech-spec.md + per-repo specs")
+    print(f"  Repos:       {', '.join(repo_names)}")
+    print("  Running headless (no TUI interaction)...")
+    print("────────────────────────────────────────────────────\n")
+
+    # Pass the context files via -f so opencode attaches them directly.
+    file_args: list[str] = []
+    for name in context_files:
+        file_args.extend(["-f", str(spec_dir / name)])
+
+    result = subprocess.run(
+        [
+            "opencode",
+            "run",
+            "--dir",
+            str(spec_dir),
+            "--dangerously-skip-permissions",
+            *file_args,
+            "--",
+            prompt,
+        ],
+        cwd=str(spec_dir),
+        env=headless_env(),
+    )
+
+    if result.returncode != 0:
+        print(
+            f"  [WARN] Headless architect agent exited with code {result.returncode}",
+            file=sys.stderr,
+        )
+
+    if not tech_spec_file.exists():
+        print(f"  [WARN] Tech spec not found at {tech_spec_file}.", file=sys.stderr)
+        print("         The headless architect may not have written it.")
+
     return _extract_affected_repos(slug, repo_names, paths)
 
 

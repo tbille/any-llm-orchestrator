@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from totomisu.config import ProjectPaths
+from totomisu.config import CAVEMAN_PROMPT, ProjectPaths, headless_env
 
 
 # ── Phase 2: Product Manager (interactive TUI) ───────────────────────
@@ -84,6 +84,19 @@ def run_pm_headless(slug: str, paths: ProjectPaths) -> Path:
 
     prompt = (
         f"You are acting as both the Product Manager and Reviewer.\n\n"
+        f"## Working directory scope\n"
+        f"ALL files you read or write are in the CURRENT WORKING DIRECTORY.\n"
+        f"You have access to:\n"
+        f"- `input.md` (the feature request)\n"
+        f"- `triage.json` (initial classification)\n"
+        f"- `repos/<repo-name>/` (per-spec worktrees of affected repositories,\n"
+        f"   available INSIDE the current directory). You MAY read these to\n"
+        f"   inform the PRD.\n"
+        f"You MUST NOT access any path outside the current directory.  Do\n"
+        f"NOT use `../`, absolute paths, or parent-directory references.\n"
+        f"The ecosystem's upstream clones live elsewhere on disk and are\n"
+        f"OFF LIMITS; only the `repos/` inside the current dir is yours.\n\n"
+        f"## Task\n"
         f"Read the input document and create a comprehensive PRD.\n"
         f"Then critically review your own PRD for:\n"
         f"- Missing edge cases\n"
@@ -92,7 +105,7 @@ def run_pm_headless(slug: str, paths: ProjectPaths) -> Path:
         f"- Scope creep\n"
         f"- Missing acceptance criteria\n\n"
         f"Revise the PRD to address any issues found.\n"
-        f"Write the final PRD to: {prd_file}\n\n"
+        f"Write the final PRD to: prd.md (in the current directory)\n\n"
         f"Use the standard PRD template:\n"
         f"# PRD: <Title>\n"
         f"## Problem Statement\n"
@@ -120,6 +133,7 @@ def run_pm_headless(slug: str, paths: ProjectPaths) -> Path:
             prompt,
         ],
         cwd=str(spec_dir),
+        env=headless_env(),
     )
 
     if result.returncode != 0:
@@ -236,6 +250,83 @@ def run_designer(slug: str, paths: ProjectPaths) -> Path:
         ],
         cwd=str(spec_dir),
     )
+
+    return design_file
+
+
+# ── Phase 3.6: Product Designer (headless) ────────────────────────────
+
+
+def run_designer_headless(slug: str, paths: ProjectPaths) -> Path:
+    """Run the designer agent as a single headless pass.
+
+    Produces the same ``design.md`` output as the interactive flow.
+    No user interaction required.
+    """
+    spec_dir = paths.spec_dir(slug)
+    design_file = paths.spec_file(slug, "design.md")
+    prd_file = paths.spec_file(slug, "prd.md")
+
+    print("\n── Phase 3.6: Designer (headless) ──────────────────")
+    print(f"  Working dir: {spec_dir}")
+    print(f"  PRD:         prd.md")
+    print(f"  Output:      design.md")
+    print("  Running headless (no TUI interaction)...")
+    print("────────────────────────────────────────────────────\n")
+
+    prompt = (
+        f"{CAVEMAN_PROMPT}"
+        f"Read the PRD at prd.md (in the current directory).\n\n"
+        f"## Working directory scope\n"
+        f"ALL files you read or write are in the CURRENT WORKING DIRECTORY.\n"
+        f"You have access to:\n"
+        f"- `prd.md` (the product requirements document)\n"
+        f"- `input.md`, `triage.json`\n"
+        f"- `repos/<repo-name>/` (per-spec worktrees of affected repositories,\n"
+        f"   available INSIDE the current directory). You MAY read these to\n"
+        f"   ground your design in existing SDK patterns.\n"
+        f"You MUST NOT access any path outside the current directory.  Do\n"
+        f"NOT use `../`, absolute paths, or parent-directory references.\n"
+        f"The ecosystem's upstream clones live elsewhere on disk and are\n"
+        f"OFF LIMITS; only the `repos/` inside the current dir is yours.\n\n"
+        f"## Task\n"
+        f"Create design proposals covering:\n"
+        f"- User/developer flows and interactions\n"
+        f"- SDK API ergonomics (method names, signatures, return types)\n"
+        f"- Error handling UX\n"
+        f"- CLI or configuration changes (if applicable)\n"
+        f"- Documentation patterns\n\n"
+        f"Write the design document to: design.md (in the current directory)"
+    )
+
+    file_args: list[str] = []
+    if prd_file.exists():
+        file_args = ["-f", str(prd_file)]
+
+    result = subprocess.run(
+        [
+            "opencode",
+            "run",
+            "--dir",
+            str(spec_dir),
+            "--dangerously-skip-permissions",
+            *file_args,
+            "--",
+            prompt,
+        ],
+        cwd=str(spec_dir),
+        env=headless_env(),
+    )
+
+    if result.returncode != 0:
+        print(
+            f"  [WARN] Headless designer agent exited with code {result.returncode}",
+            file=sys.stderr,
+        )
+
+    if not design_file.exists():
+        print(f"  [WARN] Design doc not found at {design_file}.", file=sys.stderr)
+        print("         The headless designer may not have written it.")
 
     return design_file
 

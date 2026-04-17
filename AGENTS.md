@@ -23,7 +23,7 @@ This installs the `totomisu` command on PATH.
 totomisu init                                         # set up workspace (clones repos, creates dirs)
 totomisu run --issue <github-issue-url>
 totomisu run --prompt "description"
-totomisu run --prompt "description" --headless        # no TUI interaction for PM/debate
+totomisu run --prompt "description" --headless        # no TUI interaction for any phase
 totomisu run --resume <slug>
 totomisu run --resume <slug> --skip-to engineer
 totomisu run --resume <slug> --ci-check all
