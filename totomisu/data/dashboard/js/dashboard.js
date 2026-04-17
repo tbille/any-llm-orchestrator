@@ -185,7 +185,13 @@ async function stopFixPRs(slug) {
 
 async function ciCheck(slug, repo) {
   const btn = document.getElementById("ci-btn-" + slug + "-" + repo);
-  if (btn) { btn.disabled = true; btn.textContent = "\u21bb"; }
+  // Optimistic disable — the next status poll will keep the disabled running
+  // state alive for as long as the ci-check tmux session exists.
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.add("btn-running");
+    btn.textContent = "\u21bb Checking CI\u2026";
+  }
   try {
     const res = await fetch("/api/ci-check", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -194,17 +200,31 @@ async function ciCheck(slug, repo) {
     if (!res.ok) {
       const data = await res.json();
       alert("CI check failed: " + (data.error || "Unknown error"));
-      if (btn) { btn.disabled = false; btn.textContent = "\u21bb CI"; }
+      if (btn) {
+        btn.disabled = false;
+        btn.classList.remove("btn-running");
+        btn.textContent = "\u21bb CI";
+      }
     }
   } catch (e) {
     alert("CI check request failed: " + e);
-    if (btn) { btn.disabled = false; btn.textContent = "\u21bb CI"; }
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove("btn-running");
+      btn.textContent = "\u21bb CI";
+    }
   }
 }
 
 async function rebasePR(slug, repo) {
   const btn = document.getElementById("rebase-btn-" + slug + "-" + repo);
-  if (btn) { btn.disabled = true; btn.textContent = "Rebasing..."; }
+  // Optimistic disable — the next status poll will render the running state
+  // authoritatively from the live tmux session list.
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.add("btn-running");
+    btn.textContent = "\u21bb Rebasing\u2026";
+  }
   try {
     const res = await fetch("/api/rebase", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -213,11 +233,19 @@ async function rebasePR(slug, repo) {
     if (!res.ok) {
       const data = await res.json();
       alert("Rebase failed: " + (data.error || "Unknown error"));
-      if (btn) { btn.disabled = false; btn.textContent = "\u21bb Rebase"; }
+      if (btn) {
+        btn.disabled = false;
+        btn.classList.remove("btn-running");
+        btn.textContent = "\u21bb Rebase";
+      }
     }
   } catch (e) {
     alert("Rebase request failed: " + e);
-    if (btn) { btn.disabled = false; btn.textContent = "\u21bb Rebase"; }
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove("btn-running");
+      btn.textContent = "\u21bb Rebase";
+    }
   }
 }
 
@@ -372,7 +400,8 @@ function buildRepoRows(f) {
     const currentStep = progress.step || "";
     const history = progress.history || [];
     const liveCI = (prInfo[r] || {}).ci;
-    const effectiveStep = (liveCI === "pass" && currentStep.startsWith("ci")) ? "done" : currentStep;
+    const isMerged = (prInfo[r] || {}).merged;
+    const effectiveStep = isMerged ? "done" : (liveCI === "pass" && currentStep.startsWith("ci")) ? "done" : currentStep;
     const effectiveIdx = stepIndex(effectiveStep);
 
     const stepsHtml = BUILD_STEPS.map((s, i) => {
@@ -390,22 +419,31 @@ function buildRepoRows(f) {
     const histHtml = renderHistory(history, f.slug + "-" + r);
 
     // Per-repo action buttons
+    const activeSessions = f.tmux_sessions || [];
+    const rebaseRunning = activeSessions.includes("rebase-" + f.slug + "-" + r);
+    const ciCheckRunning = activeSessions.includes("ci-check-" + f.slug + "-" + r);
     let repoActions = "";
     if (pr.url) {
       repoActions += '<button class="action-btn btn-small" id="fix-pr-btn-' + f.slug + '-' + r + '" onclick="fixPRs(\'' + f.slug + '\',\'' + r + '\')">Fix</button>';
     }
-    if (pr.url && (ciSt === "fail" || ciSt === "pending")) {
-      repoActions += '<button class="action-btn btn-small" id="ci-btn-' + f.slug + '-' + r + '" onclick="ciCheck(\'' + f.slug + '\',\'' + r + '\')">\u21bb CI</button>';
+    if (pr.url && (ciSt === "fail" || ciSt === "pending" || ciCheckRunning)) {
+      const ciCls = "action-btn btn-small" + (ciCheckRunning ? " btn-running" : "");
+      const ciLabel = ciCheckRunning ? "\u21bb Checking CI\u2026" : "\u21bb CI";
+      const ciDisabled = ciCheckRunning ? " disabled" : "";
+      repoActions += '<button class="' + ciCls + '" id="ci-btn-' + f.slug + '-' + r + '"' + ciDisabled + ' onclick="ciCheck(\'' + f.slug + '\',\'' + r + '\')">' + ciLabel + '</button>';
     }
     if (pr.url) {
-      repoActions += '<button class="action-btn btn-small" id="rebase-btn-' + f.slug + '-' + r + '" onclick="rebasePR(\'' + f.slug + '\',\'' + r + '\')">\u21bb Rebase</button>';
+      const rbCls = "action-btn btn-small" + (rebaseRunning ? " btn-running" : "");
+      const rbLabel = rebaseRunning ? "\u21bb Rebasing\u2026" : "\u21bb Rebase";
+      const rbDisabled = rebaseRunning ? " disabled" : "";
+      repoActions += '<button class="' + rbCls + '" id="rebase-btn-' + f.slug + '-' + r + '"' + rbDisabled + ' onclick="rebasePR(\'' + f.slug + '\',\'' + r + '\')">' + rbLabel + '</button>';
     }
 
     return "<tr id=\"row-" + f.slug + "-" + r + "\">" +
       "<td>" + chevronHtml + "<strong>" + r + "</strong> " + logSize + "</td>" +
       '<td><div class="repo-steps">' + stepsHtml + elapsed + histHtml + "</div></td>" +
       "<td>" + prLink + repoActions + "</td>" +
-      "<td>" + (pr.url ? (pr.needs_rebase ? '<span class="status-dot dot-rebase"></span>needs rebase · ' : '') + '<span class="status-dot dot-' + ciSt + '"></span>' + ciSt : "") + "</td>" +
+      "<td>" + (pr.url ? (pr.merged ? '<span class="status-dot dot-merged"></span>merged' : (pr.needs_rebase ? '<span class="status-dot dot-rebase"></span>needs rebase · ' : '') + '<span class="status-dot dot-' + ciSt + '"></span>' + ciSt) : "") + "</td>" +
       "</tr>" +
       (logHtml ? '<tr id="log-row-' + f.slug + '-' + r + '" style="display:' + (isExpanded ? "" : "none") + '"><td colspan="4">' + logHtml + "</td></tr>" : "");
   }).join("");

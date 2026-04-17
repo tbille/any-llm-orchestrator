@@ -41,6 +41,7 @@ a:hover { text-decoration: underline; }
 .dot-running, .dot-pending { background: var(--blue); }
 .dot-fail { background: var(--red); }
 .dot-rebase { background: var(--yellow); }
+.dot-merged { background: var(--purple); }
 .dot-none, .dot-skipped { background: var(--muted); opacity: 0.4; }
 
 /* Shared pulse animation */
@@ -61,3 +62,16 @@ a:hover { text-decoration: underline; }
 .action-btn.btn-danger { background: rgba(248,81,73,0.12); color: var(--red); border-color: rgba(248,81,73,0.3); }
 .action-btn.btn-danger:hover { background: rgba(248,81,73,0.25); }
 .action-btn.btn-small { font-size: 10px; padding: 2px 6px; margin-left: 4px; }
+/* Running state — used while a long-running tmux task (rebase, ci-check) is
+   active for the associated repo.  Visually distinct + pulsing so it's obvious
+   the task is still ongoing and the button is intentionally disabled. */
+.action-btn.btn-running {
+  background: rgba(210,153,34,0.15);
+  color: var(--yellow);
+  border-color: rgba(210,153,34,0.35);
+  cursor: progress;
+  opacity: 1;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.action-btn.btn-running:disabled { opacity: 1; }
+.action-btn.btn-running:hover { background: rgba(210,153,34,0.15); }

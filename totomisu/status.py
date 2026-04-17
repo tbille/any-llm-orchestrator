@@ -441,9 +441,14 @@ def get_log_tails(
 def get_live_tmux_sessions() -> dict[str, list[str]]:
     """Return a map of slug -> list of active tmux session names.
 
-    Session names are expected to follow the pattern ``<type>-<slug>``,
-    e.g. ``build-add-batch-api``.
+    Session names follow two patterns:
+      * ``<type>-<slug>``, e.g. ``build-add-batch-api``.
+      * ``<type>-<slug>-<repo>`` for per-repo tasks like ``rebase-<slug>-<repo>``
+        and ``ci-check-<slug>-<repo>``.  These are attributed to ``<slug>`` so
+        the dashboard can surface a running indicator on the relevant repo row.
     """
+    from totomisu.config import REPO_BY_NAME
+
     result = subprocess.run(
         ["tmux", "list-sessions", "-F", "#{session_name}"],
         capture_output=True,
@@ -452,19 +457,50 @@ def get_live_tmux_sessions() -> dict[str, list[str]]:
     if result.returncode != 0:
         return {}
 
+    # Prefixes whose session name format is ``<prefix><slug>``.
+    slug_only_prefixes = (
+        "fix-pr-",
+        "xfix-",
+        "build-",
+        "eng-",
+        "review-",
+        "pr-",
+        "ci-fix-",
+    )
+    # Prefixes whose session name format is ``<prefix><slug>-<repo>``.
+    per_repo_prefixes = (
+        "rebase-",
+        "ci-check-",
+    )
+
     slug_sessions: dict[str, list[str]] = {}
     for line in result.stdout.strip().splitlines():
         name = line.strip()
-        # Parse prefix-slug pattern.
-        for prefix in (
-            "fix-pr-",
-            "xfix-",
-            "build-",
-            "eng-",
-            "review-",
-            "pr-",
-            "ci-fix-",
-        ):
+        matched = False
+
+        # Per-repo sessions first — need to strip the trailing repo name so
+        # slug-with-dashes is parsed correctly.
+        for prefix in per_repo_prefixes:
+            if not name.startswith(prefix):
+                continue
+            remainder = name[len(prefix) :]
+            # Match the longest known repo name as a suffix of the remainder.
+            slug: str | None = None
+            for repo_name in REPO_BY_NAME:
+                suffix = "-" + repo_name
+                if remainder.endswith(suffix) and len(remainder) > len(suffix):
+                    slug = remainder[: -len(suffix)]
+                    break
+            if slug is not None:
+                slug_sessions.setdefault(slug, []).append(name)
+            matched = True
+            break
+
+        if matched:
+            continue
+
+        # Slug-only sessions.
+        for prefix in slug_only_prefixes:
             if name.startswith(prefix):
                 slug = name[len(prefix) :]
                 # Handle suffixes like "-fix".
@@ -484,17 +520,18 @@ _GH_TIMEOUT = 10  # seconds – prevents a hung gh call from blocking the API
 def _query_single_repo_pr(
     wt_path: Path,
 ) -> dict:
-    """Query ``gh`` for a single repo's PR URL, CI status, and rebase state.
+    """Query ``gh`` for a single repo's PR URL, CI status, rebase and merge state.
 
     Returns ``{"url": ..., "ci": "pass"|"fail"|"pending"|"none",
-    "needs_rebase": bool}``.
+    "needs_rebase": bool, "merged": bool}``.
     """
-    # Get PR URL and merge-state in a single gh call.
+    # Get PR URL, merge-state, and PR state in a single gh call.
     url: str | None = None
     needs_rebase = False
+    merged = False
     try:
         pr_result = subprocess.run(
-            ["gh", "pr", "view", "--json", "url,mergeStateStatus"],
+            ["gh", "pr", "view", "--json", "url,mergeStateStatus,state"],
             cwd=str(wt_path),
             capture_output=True,
             text=True,
@@ -508,6 +545,9 @@ def _query_single_repo_pr(
                 # BEHIND = branch is behind base, needs rebase.
                 # DIRTY  = merge conflicts exist, also needs rebase.
                 needs_rebase = merge_state in ("BEHIND", "DIRTY")
+                # Detect merged PRs from the state field.
+                pr_state = (pr_data.get("state") or "").upper()
+                merged = pr_state == "MERGED"
             except json.JSONDecodeError:
                 url = None
     except subprocess.TimeoutExpired:
@@ -549,7 +589,7 @@ def _query_single_repo_pr(
     except subprocess.TimeoutExpired:
         ci = "none"
 
-    return {"url": url, "ci": ci, "needs_rebase": needs_rebase}
+    return {"url": url, "ci": ci, "needs_rebase": needs_rebase, "merged": merged}
 
 
 def get_pr_info_for_feature(
@@ -560,7 +600,7 @@ def get_pr_info_for_feature(
     """Query ``gh`` for PR URL, check status, and rebase state per repo.
 
     Returns a map of repo name -> {"url": ..., "ci": "pass"|"fail"|"pending"|"none",
-    "needs_rebase": bool}.
+    "needs_rebase": bool, "merged": bool}.
 
     Each ``gh`` invocation is capped at :data:`_GH_TIMEOUT` seconds so that
     a single slow or unreachable call cannot block the dashboard API response.
@@ -572,7 +612,12 @@ def get_pr_info_for_feature(
     for name in repo_names:
         wt_path = paths.worktree_path(slug, name)
         if not wt_path.exists():
-            info[name] = {"url": None, "ci": "none", "needs_rebase": False}
+            info[name] = {
+                "url": None,
+                "ci": "none",
+                "needs_rebase": False,
+                "merged": False,
+            }
         else:
             to_query[name] = wt_path
 
@@ -586,6 +631,11 @@ def get_pr_info_for_feature(
                 try:
                     info[name] = future.result(timeout=_GH_TIMEOUT + 2)
                 except Exception:
-                    info[name] = {"url": None, "ci": "none", "needs_rebase": False}
+                    info[name] = {
+                        "url": None,
+                        "ci": "none",
+                        "needs_rebase": False,
+                        "merged": False,
+                    }
 
     return info

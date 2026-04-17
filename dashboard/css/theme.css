@@ -41,6 +41,7 @@ a:hover { text-decoration: underline; }
 .dot-running, .dot-pending { background: var(--blue); }
 .dot-fail { background: var(--red); }
 .dot-rebase { background: var(--yellow); }
+.dot-merged { background: var(--purple); }
 .dot-none, .dot-skipped { background: var(--muted); opacity: 0.4; }
 
 /* Shared pulse animation */

@@ -372,7 +372,8 @@ function buildRepoRows(f) {
     const currentStep = progress.step || "";
     const history = progress.history || [];
     const liveCI = (prInfo[r] || {}).ci;
-    const effectiveStep = (liveCI === "pass" && currentStep.startsWith("ci")) ? "done" : currentStep;
+    const isMerged = (prInfo[r] || {}).merged;
+    const effectiveStep = isMerged ? "done" : (liveCI === "pass" && currentStep.startsWith("ci")) ? "done" : currentStep;
     const effectiveIdx = stepIndex(effectiveStep);
 
     const stepsHtml = BUILD_STEPS.map((s, i) => {
@@ -405,7 +406,7 @@ function buildRepoRows(f) {
       "<td>" + chevronHtml + "<strong>" + r + "</strong> " + logSize + "</td>" +
       '<td><div class="repo-steps">' + stepsHtml + elapsed + histHtml + "</div></td>" +
       "<td>" + prLink + repoActions + "</td>" +
-      "<td>" + (pr.url ? (pr.needs_rebase ? '<span class="status-dot dot-rebase"></span>needs rebase · ' : '') + '<span class="status-dot dot-' + ciSt + '"></span>' + ciSt : "") + "</td>" +
+      "<td>" + (pr.url ? (pr.merged ? '<span class="status-dot dot-merged"></span>merged' : (pr.needs_rebase ? '<span class="status-dot dot-rebase"></span>needs rebase · ' : '') + '<span class="status-dot dot-' + ciSt + '"></span>' + ciSt) : "") + "</td>" +
       "</tr>" +
       (logHtml ? '<tr id="log-row-' + f.slug + '-' + r + '" style="display:' + (isExpanded ? "" : "none") + '"><td colspan="4">' + logHtml + "</td></tr>" : "");
   }).join("");
